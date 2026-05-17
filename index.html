@@ -9,6 +9,18 @@
       src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"
       defer
     ></script>
+    <script
+      src="https://www.gstatic.com/firebasejs/12.7.0/firebase-app-compat.js"
+      defer
+    ></script>
+    <script
+      src="https://www.gstatic.com/firebasejs/12.7.0/firebase-auth-compat.js"
+      defer
+    ></script>
+    <script
+      src="https://www.gstatic.com/firebasejs/12.7.0/firebase-database-compat.js"
+      defer
+    ></script>
     <script src="./app.js" defer></script>
   </head>
   <body>
@@ -55,6 +67,28 @@
 
         <aside class="command-panel" aria-label="操作パネル">
           <section class="player-readout top-readout" id="opponentInfo"></section>
+
+          <section class="control-section room-section">
+            <h2>オンライン対戦</h2>
+            <div class="field-row">
+              <label for="roomIdInput">ルーム</label>
+              <input id="roomIdInput" type="text" autocomplete="off" placeholder="room-1234" />
+            </div>
+            <div class="field-row">
+              <label for="seatSelect">担当</label>
+              <select id="seatSelect">
+                <option value="self">先攻側</option>
+                <option value="opponent">後攻側</option>
+              </select>
+            </div>
+            <div class="control-grid">
+              <button class="primary-button" id="joinRoomButton" type="button">接続</button>
+              <button class="subtle-button" id="leaveRoomButton" type="button" disabled>
+                切断
+              </button>
+            </div>
+            <p class="sync-status" id="syncStatus">未接続</p>
+          </section>
 
           <section class="control-section">
             <div class="turn-badge" id="turnBadge">待機中</div>

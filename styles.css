@@ -719,6 +719,45 @@ select {
   font-weight: 800;
 }
 
+input[type="text"] {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fcff;
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.room-section {
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.32);
+  border: 1px solid rgba(52, 86, 108, 0.2);
+  border-radius: 8px;
+}
+
+.room-section h2 {
+  margin: 0 0 8px;
+  font-size: 0.86rem;
+}
+
+.sync-status {
+  margin: 8px 0 0;
+  color: #38536a;
+  font-size: 0.76rem;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.sync-status.connected {
+  color: #1f6f45;
+}
+
+.sync-status.error {
+  color: var(--danger);
+}
+
 .control-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

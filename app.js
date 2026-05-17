@@ -4,6 +4,17 @@ const DB_NAME = "remote-duel-mat-prototype";
 const DB_VERSION = 1;
 const DECK_STORE = "decks";
 const MAX_UNDO_HISTORY = 30;
+const ROOM_WRITE_DEBOUNCE_MS = 350;
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCkiAVvIi7GS-Sy5ukISXTv1IDE913L15k",
+  authDomain: "remoteduel-9e458.firebaseapp.com",
+  databaseURL: "https://remoteduel-9e458-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "remoteduel-9e458",
+  storageBucket: "remoteduel-9e458.firebasestorage.app",
+  messagingSenderId: "400106444751",
+  appId: "1:400106444751:web:3441ea11e310cfc04724ba",
+};
 
 const PLAYERS = {
   self: { label: "自分", laneId: "lane-self" },
@@ -55,6 +66,24 @@ const state = {
 };
 
 const els = {};
+const roomSync = {
+  app: null,
+  auth: null,
+  db: null,
+  user: null,
+  roomId: "",
+  localSlot: "self",
+  roomRef: null,
+  presenceRef: null,
+  connected: false,
+  connecting: false,
+  applyingRemote: false,
+  writeTimer: null,
+  lastSyncedHash: "",
+  clientId: getClientId(),
+  status: "Firebase初期化中",
+  statusType: "",
+};
 let pointerDrag = null;
 let suppressCardClickUntil = 0;
 let lastCardClick = null;
@@ -62,6 +91,7 @@ let lastCardClick = null;
 document.addEventListener("DOMContentLoaded", () => {
   bindElements();
   bindEvents();
+  initFirebase();
   restoreDecks().finally(() => render());
 });
 
@@ -87,6 +117,11 @@ function bindElements() {
   els.opponentInfo = document.querySelector("#opponentInfo");
   els.handPanel = document.querySelector("#handPanel");
   els.drawButton = document.querySelector("#drawButton");
+  els.roomIdInput = document.querySelector("#roomIdInput");
+  els.seatSelect = document.querySelector("#seatSelect");
+  els.joinRoomButton = document.querySelector("#joinRoomButton");
+  els.leaveRoomButton = document.querySelector("#leaveRoomButton");
+  els.syncStatus = document.querySelector("#syncStatus");
 
   Object.keys(PLAYERS).forEach((slot) => {
     els[`zipInput-${slot}`] = document.querySelector(`#zipInput-${slot}`);
@@ -123,6 +158,8 @@ function bindEvents() {
   els.sampleDeckButton.addEventListener("click", async () => {
     state.decks.self = createSampleDeck("self");
     state.decks.opponent = createSampleDeck("opponent");
+    hydratePlayerImages("self");
+    hydratePlayerImages("opponent");
     await saveDeck("self", state.decks.self);
     await saveDeck("opponent", state.decks.opponent);
     pushLog("サンプルデッキを読み込みました");
@@ -136,9 +173,168 @@ function bindEvents() {
   els.extraTurnButton.addEventListener("click", addExtraTurn);
   els.resetButton.addEventListener("click", resetGame);
   els.drawButton.addEventListener("click", () => drawCards(state.viewer, 1));
+  els.joinRoomButton.addEventListener("click", connectRoom);
+  els.leaveRoomButton.addEventListener("click", disconnectRoom);
   document.addEventListener("click", handleDocumentClick);
   window.addEventListener("pointermove", handlePointerMove);
   window.addEventListener("pointerup", handlePointerUp);
+}
+
+function getClientId() {
+  const key = "remote-duel-client-id";
+  try {
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    const next = crypto.randomUUID();
+    localStorage.setItem(key, next);
+    return next;
+  } catch {
+    return crypto.randomUUID();
+  }
+}
+
+function initFirebase() {
+  if (!window.firebase?.initializeApp) {
+    roomSync.status = "Firebase SDKを読み込めませんでした";
+    roomSync.statusType = "error";
+    return;
+  }
+
+  try {
+    roomSync.app = window.firebase.apps?.length
+      ? window.firebase.app()
+      : window.firebase.initializeApp(firebaseConfig);
+    roomSync.auth = window.firebase.auth();
+    roomSync.db = window.firebase.database();
+    roomSync.auth.onAuthStateChanged((user) => {
+      roomSync.user = user;
+      if (!roomSync.connected && !roomSync.connecting) {
+        roomSync.status = user ? "匿名ログイン済み" : "匿名ログイン待機中";
+        roomSync.statusType = user ? "" : "error";
+        renderRoomControls();
+      }
+    });
+    roomSync.auth.signInAnonymously().catch((error) => {
+      roomSync.status = `匿名ログインエラー: ${error.message}`;
+      roomSync.statusType = "error";
+      renderRoomControls();
+    });
+  } catch (error) {
+    roomSync.status = `Firebase初期化エラー: ${error.message}`;
+    roomSync.statusType = "error";
+  }
+}
+
+async function connectRoom() {
+  if (!roomSync.db || !roomSync.auth) {
+    roomSync.status = "Firebaseがまだ使えません";
+    roomSync.statusType = "error";
+    renderRoomControls();
+    return;
+  }
+
+  const roomId = normalizeRoomId(els.roomIdInput.value || generateRoomId());
+  if (!roomId) {
+    roomSync.status = "ルームIDを入力してください";
+    roomSync.statusType = "error";
+    renderRoomControls();
+    return;
+  }
+
+  roomSync.connecting = true;
+  roomSync.status = "接続中...";
+  roomSync.statusType = "";
+  renderRoomControls();
+
+  try {
+    if (!roomSync.user) {
+      const credential = await roomSync.auth.signInAnonymously();
+      roomSync.user = credential.user;
+    }
+
+    if (roomSync.connected) disconnectRoom({ silent: true });
+
+    roomSync.roomId = roomId;
+    roomSync.localSlot = els.seatSelect.value;
+    roomSync.roomRef = roomSync.db.ref(`rooms/${roomId}`);
+    roomSync.presenceRef = roomSync.roomRef.child(`presence/${roomSync.user.uid}`);
+    roomSync.connected = true;
+    state.viewer = roomSync.localSlot;
+    clearSelection();
+    closeTemporaryViews();
+
+    await roomSync.presenceRef.set({
+      slot: roomSync.localSlot,
+      clientId: roomSync.clientId,
+      joinedAt: window.firebase.database.ServerValue.TIMESTAMP,
+    });
+    roomSync.presenceRef.onDisconnect().remove();
+
+    const snapshot = await roomSync.roomRef.once("value");
+    const payload = snapshot.val();
+    if (payload?.state) {
+      applyRoomPayload(payload);
+    } else {
+      await writeRoomState({ force: true });
+    }
+
+    roomSync.roomRef.on("value", handleRoomSnapshot);
+    roomSync.status = `接続中: ${roomId} / ${PLAYERS[roomSync.localSlot].label}側`;
+    roomSync.statusType = "connected";
+  } catch (error) {
+    disconnectRoom({ silent: true });
+    roomSync.status = `接続エラー: ${error.message}`;
+    roomSync.statusType = "error";
+  } finally {
+    roomSync.connecting = false;
+    render();
+  }
+}
+
+function disconnectRoom(options = {}) {
+  if (roomSync.writeTimer) {
+    clearTimeout(roomSync.writeTimer);
+    roomSync.writeTimer = null;
+  }
+  if (roomSync.roomRef) roomSync.roomRef.off("value", handleRoomSnapshot);
+  if (roomSync.presenceRef) {
+    roomSync.presenceRef.remove();
+    roomSync.presenceRef = null;
+  }
+
+  roomSync.roomRef = null;
+  roomSync.connected = false;
+  roomSync.connecting = false;
+  roomSync.lastSyncedHash = "";
+  if (!options.silent) {
+    roomSync.status = roomSync.user ? "匿名ログイン済み" : "未接続";
+    roomSync.statusType = "";
+    render();
+  }
+}
+
+function normalizeRoomId(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[.#$/\[\]]/g, "-")
+    .replace(/\s+/g, "-")
+    .slice(0, 48);
+}
+
+function generateRoomId() {
+  return `room-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function renderRoomControls() {
+  if (!els.syncStatus) return;
+  els.roomIdInput.value = roomSync.roomId || els.roomIdInput.value;
+  els.seatSelect.value = roomSync.localSlot;
+  els.roomIdInput.disabled = roomSync.connected || roomSync.connecting;
+  els.seatSelect.disabled = roomSync.connected || roomSync.connecting;
+  els.joinRoomButton.disabled = roomSync.connected || roomSync.connecting;
+  els.leaveRoomButton.disabled = !roomSync.connected && !roomSync.connecting;
+  els.syncStatus.textContent = roomSync.status || "未接続";
+  els.syncStatus.className = `sync-status ${roomSync.statusType || ""}`.trim();
 }
 
 function emptyPlayerState() {
@@ -188,6 +384,7 @@ async function importZipDeck(slot, file) {
 
   state.decks[slot] = deck;
   await saveDeck(slot, deck);
+  hydratePlayerImages(slot);
 }
 
 function findDeckJson(zip) {
@@ -833,6 +1030,8 @@ function render() {
   renderHandPanel();
   renderLog();
   renderStatus();
+  renderRoomControls();
+  scheduleRoomStateWrite();
 }
 
 function renderRevealArea() {
@@ -2296,6 +2495,196 @@ function pushLog(message) {
     second: "2-digit",
   });
   state.log.push(`${time} ${message}`);
+}
+
+function scheduleRoomStateWrite() {
+  if (!roomSync.connected || roomSync.connecting || roomSync.applyingRemote || !roomSync.roomRef) {
+    return;
+  }
+  const { hash } = buildRoomPayload();
+  if (hash === roomSync.lastSyncedHash) return;
+  if (roomSync.writeTimer) clearTimeout(roomSync.writeTimer);
+  roomSync.writeTimer = setTimeout(() => {
+    roomSync.writeTimer = null;
+    writeRoomState().catch((error) => {
+      roomSync.status = `同期エラー: ${error.message}`;
+      roomSync.statusType = "error";
+      renderRoomControls();
+    });
+  }, ROOM_WRITE_DEBOUNCE_MS);
+}
+
+async function writeRoomState(options = {}) {
+  if (!roomSync.connected || !roomSync.roomRef) return;
+  const { stateData, logData, hash } = buildRoomPayload();
+  if (!options.force && hash === roomSync.lastSyncedHash) return;
+  roomSync.lastSyncedHash = hash;
+  await roomSync.roomRef.update({
+    state: stateData,
+    log: logData,
+    updatedAt: window.firebase.database.ServerValue.TIMESTAMP,
+    updatedBy: roomSync.clientId,
+  });
+}
+
+function handleRoomSnapshot(snapshot) {
+  const payload = snapshot.val();
+  if (!payload?.state) return;
+  applyRoomPayload(payload);
+}
+
+function applyRoomPayload(payload) {
+  const logData = normalizeRoomLog(payload.log);
+  const hash = roomHash(payload.state, logData);
+  if (hash === roomSync.lastSyncedHash) return;
+
+  roomSync.applyingRemote = true;
+  state.players = hydrateSyncedPlayers(payload.state.players || {});
+  state.turn = payload.state.turn || "self";
+  state.turnCount = clonePlain(payload.state.turnCount || { self: 1, opponent: 0 });
+  state.extraTurns = clonePlain(payload.state.extraTurns || { self: 0, opponent: 0 });
+  state.log = logData;
+  state.pendingShieldCheckReveal = null;
+  clearSelection();
+  closeTemporaryViews();
+  roomSync.lastSyncedHash = hash;
+  render();
+  roomSync.applyingRemote = false;
+}
+
+function buildRoomPayload() {
+  const stateData = {
+    players: sanitizePlayersForRoom(),
+    turn: state.turn,
+    turnCount: clonePlain(state.turnCount),
+    extraTurns: clonePlain(state.extraTurns),
+  };
+  const logData = state.log.slice(-120);
+  return {
+    stateData,
+    logData,
+    hash: roomHash(stateData, logData),
+  };
+}
+
+function roomHash(stateData, logData) {
+  return JSON.stringify({ state: stateData, log: logData });
+}
+
+function sanitizePlayersForRoom() {
+  return Object.keys(PLAYERS).reduce((players, slot) => {
+    const player = state.players[slot] || emptyPlayerState();
+    players[slot] = {
+      deck: sanitizeCardsForRoom(player.deck),
+      hand: sanitizeCardsForRoom(player.hand),
+      shields: sanitizeCardsForRoom(player.shields),
+      mana: sanitizeCardsForRoom(player.mana),
+      battle: sanitizeCardsForRoom(player.battle),
+      graveyard: sanitizeCardsForRoom(player.graveyard),
+      pending: sanitizeCardsForRoom(player.pending),
+      revealed: sanitizeCardsForRoom(player.revealed),
+      shieldCheck: sanitizeCardsForRoom(player.shieldCheck),
+      judge: sanitizeCardsForRoom(player.judge),
+      nextShieldNumber: player.nextShieldNumber || 1,
+    };
+    return players;
+  }, {});
+}
+
+function sanitizeCardsForRoom(cards = []) {
+  return cards.map((card) => sanitizeCardForRoom(card));
+}
+
+function sanitizeCardForRoom(card) {
+  const clean = {
+    uid: card.uid,
+    cardId: card.cardId || "",
+    name: card.name || "カード",
+    tapped: Boolean(card.tapped),
+    faceUp: Boolean(card.faceUp),
+    stack: sanitizeCardsForRoom(card.stack || []),
+  };
+  if (card.shieldNumber) clean.shieldNumber = card.shieldNumber;
+  if (card.shieldCheckRevealed) clean.shieldCheckRevealed = true;
+  return clean;
+}
+
+function hydrateSyncedPlayers(players) {
+  return Object.keys(PLAYERS).reduce((result, slot) => {
+    const source = players[slot] || {};
+    const player = emptyPlayerState();
+    Object.keys(player).forEach((zone) => {
+      if (Array.isArray(player[zone])) {
+        player[zone] = hydrateSyncedCards(slot, source[zone] || []);
+      }
+    });
+    player.nextShieldNumber =
+      Number.isInteger(source.nextShieldNumber) && source.nextShieldNumber > 0
+        ? source.nextShieldNumber
+        : highestShieldNumber(player) + 1;
+    result[slot] = player;
+    return result;
+  }, {});
+}
+
+function hydrateSyncedCards(slot, cards = []) {
+  return cards.map((card) => hydrateSyncedCard(slot, card));
+}
+
+function hydrateSyncedCard(slot, card) {
+  return {
+    uid: card.uid,
+    cardId: card.cardId || "",
+    name: card.name || "カード",
+    imageUrl: resolveLocalCardImageUrl(slot, card),
+    tapped: Boolean(card.tapped),
+    faceUp: Boolean(card.faceUp),
+    shieldNumber: card.shieldNumber || undefined,
+    shieldCheckRevealed: Boolean(card.shieldCheckRevealed),
+    stack: hydrateSyncedCards(slot, card.stack || []),
+  };
+}
+
+function resolveLocalCardImageUrl(slot, card) {
+  const deck = state.decks[slot];
+  if (!deck) return "";
+  const rawCardId = unscopedCardId(card.cardId || "");
+  const match = deck.cards.find(
+    (deckCard) =>
+      scopedCardId(slot, deckCard.id) === card.cardId ||
+      deckCard.id === rawCardId ||
+      deckCard.name === card.name,
+  );
+  return match?.imageUrl || "";
+}
+
+function unscopedCardId(cardId) {
+  return String(cardId).includes(":") ? String(cardId).slice(String(cardId).indexOf(":") + 1) : cardId;
+}
+
+function hydratePlayerImages(slot) {
+  const player = state.players[slot];
+  if (!player) return;
+  Object.keys(player).forEach((zone) => {
+    if (!Array.isArray(player[zone])) return;
+    hydrateCardImages(slot, player[zone]);
+  });
+}
+
+function hydrateCardImages(slot, cards) {
+  cards.forEach((card) => {
+    card.imageUrl = resolveLocalCardImageUrl(slot, card) || card.imageUrl || "";
+    if (card.stack?.length) hydrateCardImages(slot, card.stack);
+  });
+}
+
+function normalizeRoomLog(log) {
+  if (Array.isArray(log)) return log.filter((entry) => typeof entry === "string");
+  if (!log || typeof log !== "object") return [];
+  return Object.keys(log)
+    .sort((a, b) => Number(a) - Number(b))
+    .map((key) => log[key])
+    .filter((entry) => typeof entry === "string");
 }
 
 function shuffle(cards) {

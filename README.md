@@ -55,9 +55,32 @@ python3 -m http.server 5173
 
 そのあとブラウザで `http://localhost:5173` を開きます。
 
+## オンライン対戦
+
+Firebase CDN版SDKをscriptタグで読み込み、匿名ログイン + Realtime Databaseで同期します。npmは不要です。
+
+- ルームIDを入力して `接続` を押すと `rooms/{roomId}` に盤面状態とログを保存します。
+- 先攻側/後攻側を選ぶと、そのプレイヤー視点へ切り替わります。
+- 画像データはRealtime Databaseへ保存しません。各プレイヤーが手元で読み込んだZIPの画像をローカル表示に使います。
+
+Realtime Database rulesの最小例:
+
+```json
+{
+  "rules": {
+    "rooms": {
+      "$roomId": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    }
+  }
+}
+```
+
 ## 次に足すなら
 
-- Firebase Realtime DatabaseまたはSupabase Realtimeでルーム同期
-- 操作ログをDBへ保存して相手側へ反映
+- ルーム参加者だけが読み書きできるSecurity Rules
+- Firebase接続時の先攻/後攻ラベルの見せ方改善
 - deck.jsonの検証エラー表示
 - カード検索とデッキ編集
