@@ -2587,6 +2587,9 @@ function applyRoomPayload(payload) {
   const hash = roomHash(payload.state, logData);
   if (hash === roomSync.lastSyncedHash) return;
 
+  const localSelection = clonePlain(state.selected || []);
+  const localPendingShieldAction = clonePlain(state.pendingShieldAction || null);
+  const localPendingDeckAction = clonePlain(state.pendingDeckAction || null);
   roomSync.applyingRemote = true;
   state.players = hydrateSyncedPlayers(payload.state.players || {});
   state.viewer = preferredViewerSlot(state.viewer || "self");
@@ -2595,11 +2598,22 @@ function applyRoomPayload(payload) {
   state.extraTurns = clonePlain(payload.state.extraTurns || { self: 0, opponent: 0 });
   state.log = logData;
   state.pendingShieldCheckReveal = null;
-  clearSelection();
+  restoreSelectionAfterRemote(localSelection, {
+    pendingShieldAction: localPendingShieldAction,
+    pendingDeckAction: localPendingDeckAction,
+  });
+  state.handMenuOwner = null;
+  state.deckMenuOwner = null;
   closeTemporaryViews();
   roomSync.lastSyncedHash = hash;
   render();
   roomSync.applyingRemote = false;
+}
+
+function restoreSelectionAfterRemote(selection, pending = {}) {
+  state.selected = (Array.isArray(selection) ? selection : []).filter((ref) => findCardInZone(ref));
+  state.pendingShieldAction = state.selected.length ? pending.pendingShieldAction || null : null;
+  state.pendingDeckAction = state.selected.length ? pending.pendingDeckAction || null : null;
 }
 
 function buildRoomPayload() {
