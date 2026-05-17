@@ -137,7 +137,7 @@ function bindEvents() {
       if (!file) return;
       try {
         await importZipDeck(slot, file);
-        pushLog(`${PLAYERS[slot].label}のデッキを読み込みました`);
+        pushLog(`${actionPlayerLabel(slot)}のデッキを読み込みました`);
       } catch (error) {
         console.error(error);
         pushLog(`読込エラー: ${error.message}`);
@@ -150,6 +150,11 @@ function bindEvents() {
   });
 
   els.viewerSelect.addEventListener("change", (event) => {
+    if (roomSync.connected) {
+      state.viewer = roomSync.localSlot;
+      render();
+      return;
+    }
     state.viewer = event.target.value;
     clearSelection();
     render();
@@ -215,14 +220,26 @@ function initFirebase() {
       }
     });
     roomSync.auth.signInAnonymously().catch((error) => {
-      roomSync.status = `匿名ログインエラー: ${error.message}`;
+      roomSync.status = firebaseErrorMessage(error, "匿名ログインエラー");
       roomSync.statusType = "error";
       renderRoomControls();
     });
   } catch (error) {
-    roomSync.status = `Firebase初期化エラー: ${error.message}`;
+    roomSync.status = firebaseErrorMessage(error, "Firebase初期化エラー");
     roomSync.statusType = "error";
   }
+}
+
+function firebaseErrorMessage(error, prefix) {
+  const code = String(error?.code || "").toLowerCase();
+  const message = error?.message || "不明なエラー";
+  if (code.includes("unauthorized-domain")) {
+    return `${prefix}: Firebase ConsoleのAuthorized domainsに ca-wawa.github.io を追加してください`;
+  }
+  if (code.includes("permission") || message.includes("PERMISSION_DENIED")) {
+    return `${prefix}: Realtime Database rulesを確認してください`;
+  }
+  return `${prefix}: ${message}`;
 }
 
 async function connectRoom() {
@@ -241,6 +258,7 @@ async function connectRoom() {
     return;
   }
 
+  roomSync.localSlot = els.seatSelect.value === "opponent" ? "opponent" : "self";
   roomSync.connecting = true;
   roomSync.status = "接続中...";
   roomSync.statusType = "";
@@ -255,7 +273,6 @@ async function connectRoom() {
     if (roomSync.connected) disconnectRoom({ silent: true });
 
     roomSync.roomId = roomId;
-    roomSync.localSlot = els.seatSelect.value;
     roomSync.roomRef = roomSync.db.ref(`rooms/${roomId}`);
     roomSync.presenceRef = roomSync.roomRef.child(`presence/${roomSync.user.uid}`);
     roomSync.connected = true;
@@ -279,11 +296,11 @@ async function connectRoom() {
     }
 
     roomSync.roomRef.on("value", handleRoomSnapshot);
-    roomSync.status = `接続中: ${roomId} / ${PLAYERS[roomSync.localSlot].label}側`;
+    roomSync.status = `接続中: ${roomId} / ${playerOrderLabel(roomSync.localSlot)}側`;
     roomSync.statusType = "connected";
   } catch (error) {
     disconnectRoom({ silent: true });
-    roomSync.status = `接続エラー: ${error.message}`;
+    roomSync.status = firebaseErrorMessage(error, "接続エラー");
     roomSync.statusType = "error";
   } finally {
     roomSync.connecting = false;
@@ -327,10 +344,17 @@ function generateRoomId() {
 
 function renderRoomControls() {
   if (!els.syncStatus) return;
+  if (roomSync.connected) {
+    state.viewer = roomSync.localSlot;
+    els.viewerSelect.value = roomSync.localSlot;
+  }
   els.roomIdInput.value = roomSync.roomId || els.roomIdInput.value;
-  els.seatSelect.value = roomSync.localSlot;
+  if (roomSync.connected || roomSync.connecting) {
+    els.seatSelect.value = roomSync.localSlot;
+  }
   els.roomIdInput.disabled = roomSync.connected || roomSync.connecting;
   els.seatSelect.disabled = roomSync.connected || roomSync.connecting;
+  els.viewerSelect.disabled = roomSync.connected;
   els.joinRoomButton.disabled = roomSync.connected || roomSync.connecting;
   els.leaveRoomButton.disabled = !roomSync.connected && !roomSync.connecting;
   els.syncStatus.textContent = roomSync.status || "未接続";
@@ -499,7 +523,7 @@ function setupGame() {
   });
 
   state.turn = "self";
-  state.viewer = "self";
+  state.viewer = preferredViewerSlot("self");
   state.turnCount = { self: 1, opponent: 0 };
   state.extraTurns = { self: 0, opponent: 0 };
   state.selected = [];
@@ -520,7 +544,7 @@ function drawCard(slot) {
 function drawCards(slot, count) {
   const player = state.players[slot];
   if (!player.deck.length) {
-    pushLog(`${PLAYERS[slot].label}の山札がありません`);
+    pushLog(`${actionPlayerLabel(slot)}の山札がありません`);
     render();
     return;
   }
@@ -535,7 +559,7 @@ function drawCards(slot, count) {
     moved += 1;
   }
   clearSelection();
-  pushLog(`${PLAYERS[slot].label}が${moved}枚ドロー`);
+  pushLog(`${actionPlayerLabel(slot)}が${moved}枚ドロー`);
   render();
 }
 
@@ -546,7 +570,7 @@ function shieldFromDeck(slot) {
 function shieldFromDeckCards(slot, count) {
   const player = state.players[slot];
   if (!player.deck.length) {
-    pushLog(`${PLAYERS[slot].label}の山札がありません`);
+    pushLog(`${actionPlayerLabel(slot)}の山札がありません`);
     render();
     return;
   }
@@ -562,7 +586,7 @@ function shieldFromDeckCards(slot, count) {
     moved += 1;
   }
   clearSelection();
-  pushLog(`${PLAYERS[slot].label}が山札からシールドを${moved}枚追加`);
+  pushLog(`${actionPlayerLabel(slot)}が山札からシールドを${moved}枚追加`);
   render();
 }
 
@@ -573,7 +597,7 @@ function millCard(slot) {
 function millCards(slot, count) {
   const player = state.players[slot];
   if (!player.deck.length) {
-    pushLog(`${PLAYERS[slot].label}の山札がありません`);
+    pushLog(`${actionPlayerLabel(slot)}の山札がありません`);
     render();
     return;
   }
@@ -588,14 +612,14 @@ function millCards(slot, count) {
     moved += 1;
   }
   clearSelection();
-  pushLog(`${PLAYERS[slot].label}が山札上${moved}枚を墓地へ`);
+  pushLog(`${actionPlayerLabel(slot)}が山札上${moved}枚を墓地へ`);
   render();
 }
 
 function revealDeckCards(slot, count) {
   const player = state.players[slot];
   if (!player.deck.length) {
-    pushLog(`${PLAYERS[slot].label}の山札がありません`);
+    pushLog(`${actionPlayerLabel(slot)}の山札がありません`);
     render();
     return;
   }
@@ -607,7 +631,7 @@ function revealDeckCards(slot, count) {
     player.revealed.push(card);
   });
   clearSelection();
-  pushLog(`${PLAYERS[slot].label}の山札上${cards.length}枚を公開`);
+  pushLog(`${actionPlayerLabel(slot)}の山札上${cards.length}枚を公開`);
   render();
 }
 
@@ -669,7 +693,7 @@ function hasActiveGachinkoJudge() {
 function shuffleDeck(slot) {
   const player = state.players[slot];
   if (!player.deck.length) {
-    pushLog(`${PLAYERS[slot].label}の山札がありません`);
+    pushLog(`${actionPlayerLabel(slot)}の山札がありません`);
     render();
     return;
   }
@@ -677,14 +701,14 @@ function shuffleDeck(slot) {
   saveUndoSnapshot();
   player.deck = shuffle(player.deck);
   clearSelection();
-  pushLog(`${PLAYERS[slot].label}の山札をシャッフル`);
+  pushLog(`${actionPlayerLabel(slot)}の山札をシャッフル`);
   render();
 }
 
 function discardBlindHandCards(slot, count) {
   const player = state.players[slot];
   if (!player.hand.length) {
-    pushLog(`${PLAYERS[slot].label}の手札がありません`);
+    pushLog(`${actionPlayerLabel(slot)}の手札がありません`);
     render();
     return;
   }
@@ -703,7 +727,7 @@ function discardBlindHandCards(slot, count) {
   const input = document.querySelector("#handDiscardCountInput");
   if (input) input.value = "1";
   clearSelection();
-  pushLog(`${PLAYERS[slot].label}の手札を見ないで${discardCount}枚捨てました`);
+  pushLog(`${actionPlayerLabel(slot)}の手札を見ないで${discardCount}枚捨てました`);
   render();
 }
 
@@ -725,7 +749,7 @@ function openHandPeek(owner) {
   state.handMenuOwner = null;
   state.deckMenuOwner = null;
   clearSelection();
-  pushLog(`${PLAYERS[owner].label}の手札を確認`);
+  pushLog(`${actionPlayerLabel(owner)}の手札を確認`);
   render();
 }
 
@@ -860,7 +884,7 @@ function revealSelectedShieldCheckCards() {
   });
   state.pendingShieldCheckReveal = null;
   state.selected = refs.map(({ ref }) => ref);
-  pushLog(`${PLAYERS[owner].label}: ${refs.length}枚を開示、${sentToHand}枚を手札へ`);
+  pushLog(`${actionPlayerLabel(owner)}: ${refs.length}枚を開示、${sentToHand}枚を手札へ`);
   render();
 }
 
@@ -888,7 +912,7 @@ function revealSelectedDeckBrowseCards(refs = selectedRefsWithCards()) {
   state.pendingShieldAction = null;
   state.pendingDeckAction = null;
   state.pendingShieldCheckReveal = null;
-  pushLog(`${PLAYERS[owner].label}: 山札から${movedRefs.length}枚を開示`);
+  pushLog(`${actionPlayerLabel(owner)}: 山札から${movedRefs.length}枚を開示`);
   render();
 }
 
@@ -897,7 +921,7 @@ function openSelectedShieldBrowse(refs = selectedRefsWithCards()) {
   const owner = refs[0].ref.owner;
   openZoneBrowse(owner, "shields", {
     uids: refs.map(({ ref }) => ref.uid),
-    title: `${PLAYERS[owner].label} シールド確認 ${refs.length}枚`,
+    title: `${playerLabel(owner)} シールド確認 ${refs.length}枚`,
   });
 }
 
@@ -916,7 +940,7 @@ function faceUpSelectedShields(refs = selectedRefsWithCards()) {
   state.pendingShieldAction = null;
   state.pendingDeckAction = null;
   state.pendingShieldCheckReveal = null;
-  pushLog(`${PLAYERS[owner].label}: シールド${shieldRefs.length}枚を表にしました`);
+  pushLog(`${actionPlayerLabel(owner)}: シールド${shieldRefs.length}枚を表にしました`);
   render();
 }
 
@@ -965,14 +989,14 @@ function untapPlayer(slot) {
   state.players[slot].mana.forEach((card) => {
     card.tapped = false;
   });
-  pushLog(`${PLAYERS[slot].label}を全アンタップ`);
+  pushLog(`${actionPlayerLabel(slot)}を全アンタップ`);
   render();
 }
 
 function addExtraTurn() {
   saveUndoSnapshot();
   state.extraTurns[state.turn] = (state.extraTurns[state.turn] || 0) + 1;
-  pushLog(`${PLAYERS[state.turn].label}のEXターンを追加`);
+  pushLog(`${actionPlayerLabel(state.turn)}のEXターンを追加`);
   render();
 }
 
@@ -985,12 +1009,12 @@ function endTurn() {
   } else {
     state.turn = opponentOf(state.turn);
   }
-  state.viewer = state.turn;
+  state.viewer = preferredViewerSlot(state.turn);
   state.turnCount[state.turn] += 1;
   state.pendingShieldCheckReveal = null;
   closeTemporaryViews();
   clearSelection();
-  pushLog(`${PLAYERS[state.turn].label}${usesExtraTurn ? "のEXターン" : "のターン"}`);
+  pushLog(`${actionPlayerLabel(state.turn)}${usesExtraTurn ? "のEXターン" : "のターン"}`);
   render();
 }
 
@@ -999,7 +1023,7 @@ function resetGame() {
   state.players.self = emptyPlayerState();
   state.players.opponent = emptyPlayerState();
   state.turn = "self";
-  state.viewer = "self";
+  state.viewer = preferredViewerSlot("self");
   state.turnCount = { self: 1, opponent: 0 };
   state.extraTurns = { self: 0, opponent: 0 };
   state.selected = [];
@@ -1018,11 +1042,13 @@ function render() {
 
   Object.keys(PLAYERS).forEach((slot) => {
     els[`deckName-${slot}`].textContent = state.decks[slot]?.name || "未読込";
-    renderLane(slot);
   });
+  const bottomSlot = displayBottomSlot();
+  renderLane(opponentOf(bottomSlot), els["lane-opponent"], "top");
+  renderLane(bottomSlot, els["lane-self"], "bottom");
 
-  renderPlayerInfo("opponent", els.opponentInfo);
-  renderPlayerInfo("self", els.selfInfo);
+  renderPlayerInfo(opponentOf(bottomSlot), els.opponentInfo);
+  renderPlayerInfo(bottomSlot, els.selfInfo);
   renderPendingButtons();
   renderRevealArea();
   renderSelection();
@@ -1044,7 +1070,7 @@ function renderRevealArea() {
         slot,
         zone: "revealed",
         cards: player.revealed,
-        label: `${PLAYERS[slot].label} 公開中`,
+        label: `${playerLabel(slot)} 公開中`,
       });
     }
     if (player.shieldCheck.length) {
@@ -1052,7 +1078,7 @@ function renderRevealArea() {
         slot,
         zone: "shieldCheck",
         cards: player.shieldCheck,
-        label: `${PLAYERS[slot].label} シールドチェック`,
+        label: `${playerLabel(slot)} シールドチェック`,
       });
     }
     if (player.judge.length) {
@@ -1060,7 +1086,7 @@ function renderRevealArea() {
         slot,
         zone: "judge",
         cards: player.judge,
-        label: `${PLAYERS[slot].label} ガチンコジャッジ`,
+        label: `${playerLabel(slot)} ガチンコジャッジ`,
       });
     }
     return groups;
@@ -1083,10 +1109,10 @@ function renderRevealArea() {
     const label =
       title ||
       (zone === "deck" && Number.isInteger(count)
-        ? `${PLAYERS[owner].label} 山札 ${
+        ? `${playerLabel(owner)} 山札 ${
             browseCount === deckCountAtOpen ? "全部" : `上${browseCount}枚`
           }`
-        : `${PLAYERS[owner].label} ${zoneLabel(zone)}`);
+        : `${playerLabel(owner)} ${zoneLabel(zone)}`);
     visibleGroups.push({
       slot: owner,
       zone,
@@ -1103,7 +1129,7 @@ function renderRevealArea() {
       slot: owner,
       zone: "hand",
       cards: state.players[owner]?.hand || [],
-      label: `${PLAYERS[owner].label} 手札確認`,
+      label: `${playerLabel(owner)} 手札確認`,
       forceVisible: true,
       isTemporary: true,
     });
@@ -1166,14 +1192,14 @@ function renderRevealArea() {
   }
 }
 
-function renderLane(slot) {
+function renderLane(slot, lane = els[`lane-${slot}`], position = slot === "opponent" ? "top" : "bottom") {
   const player = state.players[slot];
-  const lane = els[`lane-${slot}`];
   lane.innerHTML = "";
+  lane.dataset.slot = slot;
 
   const pileColumn = document.createElement("div");
   pileColumn.className = "pile-column";
-  if (slot === "opponent") {
+  if (position === "top") {
     pileColumn.appendChild(renderPileZone(slot, "deck"));
     pileColumn.appendChild(renderHandPileZone(slot));
     pileColumn.appendChild(renderPileZone(slot, "graveyard"));
@@ -1186,14 +1212,14 @@ function renderLane(slot) {
   const zoneColumn = document.createElement("div");
   zoneColumn.className = "zone-column";
   const order =
-    slot === "opponent"
+    position === "top"
       ? ["mana", "shields", "battle"]
       : ["battle", "shields", "mana"];
   order.forEach((zoneKey) => {
     zoneColumn.appendChild(renderZoneStrip(slot, zoneKey));
   });
 
-  if (slot === "opponent") {
+  if (position === "top") {
     lane.appendChild(pileColumn);
     lane.appendChild(zoneColumn);
   } else {
@@ -1273,7 +1299,7 @@ function renderHandPileZone(slot) {
   const button = document.createElement("button");
   button.className = "card compact pile-card hand-pile-card";
   button.type = "button";
-  button.title = `${PLAYERS[slot].label}の手札`;
+  button.title = `${playerLabel(slot)}の手札`;
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     if (slot === state.viewer) {
@@ -1423,7 +1449,7 @@ function renderPlayerInfo(slot, target) {
 
   const title = document.createElement("h2");
   const order = playerOrderLabel(slot);
-  title.textContent = `${PLAYERS[slot].label}（${order}${state.turn === slot ? "・行動中" : ""}）`;
+  title.textContent = `${playerLabel(slot)}（${order}${state.turn === slot ? "・行動中" : ""}）`;
   target.appendChild(title);
 }
 
@@ -1435,7 +1461,7 @@ function renderPendingButtons() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "pending-button";
-    button.textContent = `${PLAYERS[slot].label} 保留あり ${count}`;
+    button.textContent = `${playerLabel(slot)} 保留あり ${count}`;
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       openZoneBrowse(slot, "pending");
@@ -1501,7 +1527,7 @@ function renderSelectedPreview() {
     name.textContent = visible ? card.name : "非公開カード";
 
     const meta = document.createElement("p");
-    meta.textContent = `${PLAYERS[ref.owner].label} / ${zoneLabel(ref.zone)}`;
+    meta.textContent = `${playerLabel(ref.owner)} / ${zoneLabel(ref.zone)}`;
 
     item.appendChild(media);
     item.appendChild(name);
@@ -1555,7 +1581,7 @@ function renderSelection() {
   const meta = document.createElement("p");
   meta.className = "selection-meta";
   const zones = [...new Set(refs.map(({ ref }) => zoneLabel(ref.zone)))].join(" / ");
-  meta.textContent = `${PLAYERS[refs[0].ref.owner].label} / ${zones}`;
+  meta.textContent = `${playerLabel(refs[0].ref.owner)} / ${zones}`;
   panel.appendChild(meta);
 
   panel.appendChild(renderSelectedCardsSummary(refs));
@@ -1615,7 +1641,7 @@ function renderHandDisruptionChoice(panel) {
 
   const title = document.createElement("p");
   title.className = "selection-title";
-  title.textContent = `${PLAYERS[owner].label}の手札`;
+  title.textContent = `${playerLabel(owner)}の手札`;
   panel.appendChild(title);
 
   const meta = document.createElement("p");
@@ -1657,7 +1683,7 @@ function renderDeckMenuChoice(panel) {
 
   const title = document.createElement("p");
   title.className = "selection-title";
-  title.textContent = `${PLAYERS[owner].label}の山札`;
+  title.textContent = `${playerLabel(owner)}の山札`;
   panel.appendChild(title);
 
   const meta = document.createElement("p");
@@ -1847,7 +1873,7 @@ function renderLog() {
 
 function renderStatus() {
   const ready = Object.keys(PLAYERS).filter((slot) => state.decks[slot]).length;
-  const turnLabel = PLAYERS[state.turn].label;
+  const turnLabel = playerLabel(state.turn);
   const orderLabel = playerOrderLabel(state.turn);
   const extraTurnText = state.extraTurns[state.turn] ? ` EX+${state.extraTurns[state.turn]}` : "";
   els.turnBadge.textContent =
@@ -2054,7 +2080,7 @@ function reorderBattleCard(sourceRef, targetRef, targetElement, clientX) {
   if (sourceIndex < insertIndex) insertIndex -= 1;
   cards.splice(insertIndex, 0, card);
   state.selected = [{ owner: sourceRef.owner, zone: "battle", uid: sourceRef.uid }];
-  pushLog(`${PLAYERS[sourceRef.owner].label}: バトルゾーンの並びを変更`);
+  pushLog(`${actionPlayerLabel(sourceRef.owner)}: バトルゾーンの並びを変更`);
   render();
   return true;
 }
@@ -2119,7 +2145,7 @@ function stackSelectedBattleCards(refs = selectedRefsWithCards()) {
   remainingCards.splice(insertIndex, 0, stackedTop);
   state.players[owner].battle = remainingCards;
   state.selected = [{ owner, zone: "battle", uid: stackedTop.uid }];
-  pushLog(`${PLAYERS[owner].label}: ${battleRefs.length}枚を重ねました`);
+  pushLog(`${actionPlayerLabel(owner)}: ${battleRefs.length}枚を重ねました`);
   render();
 }
 
@@ -2469,6 +2495,24 @@ function playerOrderLabel(slot) {
   return slot === "self" ? "先攻" : "後攻";
 }
 
+function playerLabel(slot) {
+  if (!roomSync.connected) return PLAYERS[slot].label;
+  return slot === roomSync.localSlot ? "自分" : "相手";
+}
+
+function actionPlayerLabel(slot) {
+  if (!roomSync.connected) return PLAYERS[slot].label;
+  return `${playerOrderLabel(slot)}側`;
+}
+
+function preferredViewerSlot(fallback = "self") {
+  return roomSync.connected ? roomSync.localSlot : fallback;
+}
+
+function displayBottomSlot() {
+  return roomSync.connected ? roomSync.localSlot : "self";
+}
+
 function opponentOf(slot) {
   return slot === "self" ? "opponent" : "self";
 }
@@ -2507,7 +2551,7 @@ function scheduleRoomStateWrite() {
   roomSync.writeTimer = setTimeout(() => {
     roomSync.writeTimer = null;
     writeRoomState().catch((error) => {
-      roomSync.status = `同期エラー: ${error.message}`;
+      roomSync.status = firebaseErrorMessage(error, "同期エラー");
       roomSync.statusType = "error";
       renderRoomControls();
     });
@@ -2540,6 +2584,7 @@ function applyRoomPayload(payload) {
 
   roomSync.applyingRemote = true;
   state.players = hydrateSyncedPlayers(payload.state.players || {});
+  state.viewer = preferredViewerSlot(state.viewer || "self");
   state.turn = payload.state.turn || "self";
   state.turnCount = clonePlain(payload.state.turnCount || { self: 1, opponent: 0 });
   state.extraTurns = clonePlain(payload.state.extraTurns || { self: 0, opponent: 0 });

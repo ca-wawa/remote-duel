@@ -2,6 +2,8 @@
 
 GitHub Pagesで動かせる静的な対戦プレイマット試作です。
 
+公開URL: https://ca-wawa.github.io/remote-duel/
+
 ## できること
 
 - 自分/相手それぞれのデッキZIPを読み込む
@@ -61,7 +63,14 @@ Firebase CDN版SDKをscriptタグで読み込み、匿名ログイン + Realtime
 
 - ルームIDを入力して `接続` を押すと `rooms/{roomId}` に盤面状態とログを保存します。
 - 先攻側/後攻側を選ぶと、そのプレイヤー視点へ切り替わります。
+- 友人と同じルームIDを入れて、片方は先攻側、もう片方は後攻側で接続します。
 - 画像データはRealtime Databaseへ保存しません。各プレイヤーが手元で読み込んだZIPの画像をローカル表示に使います。
+
+Firebase Consoleで必要な設定:
+
+- AuthenticationのSign-in methodで匿名ログインを有効にする
+- AuthenticationのSettings > Authorized domainsに `ca-wawa.github.io` を追加する
+- Realtime Databaseを作成し、以下のrulesを設定する
 
 Realtime Database rulesの最小例:
 
@@ -81,6 +90,5 @@ Realtime Database rulesの最小例:
 ## 次に足すなら
 
 - ルーム参加者だけが読み書きできるSecurity Rules
-- Firebase接続時の先攻/後攻ラベルの見せ方改善
 - deck.jsonの検証エラー表示
 - カード検索とデッキ編集
