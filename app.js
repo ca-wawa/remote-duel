@@ -345,7 +345,6 @@ function generateRoomId() {
 function renderRoomControls() {
   if (!els.syncStatus) return;
   if (roomSync.connected) {
-    state.viewer = roomSync.localSlot;
     els.viewerSelect.value = roomSync.localSlot;
   }
   els.roomIdInput.value = roomSync.roomId || els.roomIdInput.value;
@@ -1038,6 +1037,7 @@ function resetGame() {
 }
 
 function render() {
+  enforceLocalPerspective();
   els.viewerSelect.value = state.viewer;
 
   Object.keys(PLAYERS).forEach((slot) => {
@@ -2509,7 +2509,12 @@ function preferredViewerSlot(fallback = "self") {
   return roomSync.connected ? roomSync.localSlot : fallback;
 }
 
+function enforceLocalPerspective() {
+  if (roomSync.connected) state.viewer = roomSync.localSlot;
+}
+
 function displayBottomSlot() {
+  enforceLocalPerspective();
   return roomSync.connected ? roomSync.localSlot : "self";
 }
 
