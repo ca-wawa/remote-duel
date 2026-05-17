@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remote Duel Mat Prototype</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script
+      src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"
+      defer
+    ></script>
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">local deck image prototype</p>
+          <h1>Remote Duel Mat</h1>
+        </div>
+        <div class="deck-toolbar" aria-label="デッキ読込">
+          <div class="deck-chip">
+            <span>自分</span>
+            <strong id="deckName-self">未読込</strong>
+            <label class="file-button">
+              ZIP
+              <input id="zipInput-self" type="file" accept=".zip" />
+            </label>
+          </div>
+          <div class="deck-chip">
+            <span>相手</span>
+            <strong id="deckName-opponent">未読込</strong>
+            <label class="file-button">
+              ZIP
+              <input id="zipInput-opponent" type="file" accept=".zip" />
+            </label>
+          </div>
+        </div>
+      </header>
+
+      <main class="table-layout">
+        <section class="play-area" aria-label="対戦盤面">
+          <div class="playmat">
+            <div class="player-side opponent-side" id="lane-opponent"></div>
+            <div class="middle-line">
+              <div class="pending-buttons" id="pendingButtons"></div>
+              <span id="statusText">デッキZIPを読み込むか、サンプルを使って開始できます。</span>
+            </div>
+            <div class="player-side self-side" id="lane-self"></div>
+            <div class="reveal-layer" id="revealLayer" hidden>
+              <div class="reveal-area" id="revealArea"></div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="command-panel" aria-label="操作パネル">
+          <section class="player-readout top-readout" id="opponentInfo"></section>
+
+          <section class="control-section">
+            <div class="turn-badge" id="turnBadge">待機中</div>
+            <div class="field-row">
+              <label for="viewerSelect">視点</label>
+              <select id="viewerSelect">
+                <option value="self">自分</option>
+                <option value="opponent">相手</option>
+              </select>
+            </div>
+            <div class="control-grid">
+              <button class="subtle-button" id="sampleDeckButton" type="button">サンプル</button>
+              <button class="subtle-button" id="resetButton" type="button">リセット</button>
+              <button class="primary-button" id="setupButton" type="button">開始</button>
+              <button class="subtle-button" id="untapButton" type="button">全アンタップ</button>
+              <button class="subtle-button wide-button" id="extraTurnButton" type="button">
+                exターン追加
+              </button>
+            </div>
+            <button class="end-turn-button" id="endTurnButton" type="button">次のターンへ</button>
+          </section>
+
+          <section class="deck-action-section">
+            <h2>山札操作</h2>
+            <div class="deck-action-grid">
+              <button class="subtle-button wide-button" id="drawButton" type="button">ドロー</button>
+            </div>
+          </section>
+
+          <section class="control-section">
+            <div id="selectionPanel" class="selection-panel muted">
+              カードを選択してください。
+            </div>
+          </section>
+
+          <section class="selected-preview-section" id="selectedPreviewSection" hidden>
+            <div class="selected-preview" id="selectedPreview"></div>
+          </section>
+
+          <section class="hand-section">
+            <h2>手札</h2>
+            <div class="hand-panel" id="handPanel"></div>
+          </section>
+
+          <section class="player-readout bottom-readout" id="selfInfo"></section>
+
+          <section class="log-section">
+            <div class="log-header">
+              <h2>ログ</h2>
+              <button class="subtle-button" id="undoButton" type="button" disabled>取り消し</button>
+            </div>
+            <ol class="log-list" id="logList"></ol>
+          </section>
+        </aside>
+      </main>
+    </div>
+  </body>
+</html>
