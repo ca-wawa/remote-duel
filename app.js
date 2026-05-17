@@ -80,6 +80,7 @@ const roomSync = {
   applyingRemote: false,
   writeTimer: null,
   lastSyncedHash: "",
+  pendingLocalHash: "",
   clientId: getClientId(),
   status: "Firebase初期化中",
   statusType: "",
@@ -323,6 +324,7 @@ function disconnectRoom(options = {}) {
   roomSync.connected = false;
   roomSync.connecting = false;
   roomSync.lastSyncedHash = "";
+  roomSync.pendingLocalHash = "";
   if (!options.silent) {
     roomSync.status = roomSync.user ? "匿名ログイン済み" : "未接続";
     roomSync.statusType = "";
@@ -827,7 +829,7 @@ function moveSelectedTo(zoneKey, options = {}) {
   state.pendingShieldAction = null;
   state.pendingDeckAction = null;
   state.pendingShieldCheckReveal = null;
-  const ownerLabel = PLAYERS[refs[0].ref.owner].label;
+  const ownerLabel = actionPlayerLabel(refs[0].ref.owner);
   pushLog(`${ownerLabel}: ${movedRefs.length}枚を${moveTarget.label}へ`);
   render();
 }
@@ -852,7 +854,7 @@ function startShieldCheck(refs) {
   state.pendingShieldAction = null;
   state.pendingDeckAction = null;
   state.pendingShieldCheckReveal = { owner: refs[0].ref.owner };
-  const ownerLabel = PLAYERS[refs[0].ref.owner].label;
+  const ownerLabel = actionPlayerLabel(refs[0].ref.owner);
   pushLog(`${ownerLabel}: ${movedRefs.length}枚をシールドチェック`);
   render();
 }
@@ -1865,7 +1867,7 @@ function renderLog() {
     .forEach((entry, index) => {
       const li = document.createElement("li");
       li.setAttribute("value", state.log.length - index);
-      li.textContent = entry;
+      li.textContent = formatLogEntry(entry);
       els.logList.appendChild(li);
     });
   els.logList.scrollTop = 0;
@@ -1890,7 +1892,7 @@ function renderStatus() {
 
 function latestLogMessage() {
   const latest = state.log[state.log.length - 1] || "";
-  return latest.replace(/^\d{1,2}:\d{2}:\d{2}\s+/, "");
+  return formatLogEntry(latest).replace(/^\d{1,2}:\d{2}:\d{2}\s+/, "");
 }
 
 function actionButton(label, onClick, disabled = false) {
@@ -2502,7 +2504,17 @@ function playerLabel(slot) {
 
 function actionPlayerLabel(slot) {
   if (!roomSync.connected) return PLAYERS[slot].label;
-  return `${playerOrderLabel(slot)}側`;
+  return playerLogToken(slot);
+}
+
+function playerLogToken(slot) {
+  return `{{player:${slot}}}`;
+}
+
+function formatLogEntry(entry) {
+  return String(entry || "").replace(/\{\{player:(self|opponent)\}\}/g, (_, slot) =>
+    playerLabel(slot),
+  );
 }
 
 function preferredViewerSlot(fallback = "self") {
@@ -2552,10 +2564,12 @@ function scheduleRoomStateWrite() {
   }
   const { hash } = buildRoomPayload();
   if (hash === roomSync.lastSyncedHash) return;
+  roomSync.pendingLocalHash = hash;
   if (roomSync.writeTimer) clearTimeout(roomSync.writeTimer);
   roomSync.writeTimer = setTimeout(() => {
     roomSync.writeTimer = null;
     writeRoomState().catch((error) => {
+      roomSync.pendingLocalHash = "";
       roomSync.status = firebaseErrorMessage(error, "同期エラー");
       roomSync.statusType = "error";
       renderRoomControls();
@@ -2567,13 +2581,14 @@ async function writeRoomState(options = {}) {
   if (!roomSync.connected || !roomSync.roomRef) return;
   const { stateData, logData, hash } = buildRoomPayload();
   if (!options.force && hash === roomSync.lastSyncedHash) return;
-  roomSync.lastSyncedHash = hash;
   await roomSync.roomRef.update({
     state: stateData,
     log: logData,
     updatedAt: window.firebase.database.ServerValue.TIMESTAMP,
     updatedBy: roomSync.clientId,
   });
+  roomSync.lastSyncedHash = hash;
+  if (roomSync.pendingLocalHash === hash) roomSync.pendingLocalHash = "";
 }
 
 function handleRoomSnapshot(snapshot) {
@@ -2586,10 +2601,13 @@ function applyRoomPayload(payload) {
   const logData = normalizeRoomLog(payload.log);
   const hash = roomHash(payload.state, logData);
   if (hash === roomSync.lastSyncedHash) return;
+  if (roomSync.pendingLocalHash && hash !== roomSync.pendingLocalHash) return;
 
   const localSelection = clonePlain(state.selected || []);
   const localPendingShieldAction = clonePlain(state.pendingShieldAction || null);
   const localPendingDeckAction = clonePlain(state.pendingDeckAction || null);
+  const localZoneBrowse = clonePlain(state.zoneBrowse || null);
+  const localHandPeek = clonePlain(state.handPeek || null);
   roomSync.applyingRemote = true;
   state.players = hydrateSyncedPlayers(payload.state.players || {});
   state.viewer = preferredViewerSlot(state.viewer || "self");
@@ -2604,8 +2622,9 @@ function applyRoomPayload(payload) {
   });
   state.handMenuOwner = null;
   state.deckMenuOwner = null;
-  closeTemporaryViews();
+  restoreTemporaryViewsAfterRemote(localZoneBrowse, localHandPeek);
   roomSync.lastSyncedHash = hash;
+  if (roomSync.pendingLocalHash === hash) roomSync.pendingLocalHash = "";
   render();
   roomSync.applyingRemote = false;
 }
@@ -2614,6 +2633,35 @@ function restoreSelectionAfterRemote(selection, pending = {}) {
   state.selected = (Array.isArray(selection) ? selection : []).filter((ref) => findCardInZone(ref));
   state.pendingShieldAction = state.selected.length ? pending.pendingShieldAction || null : null;
   state.pendingDeckAction = state.selected.length ? pending.pendingDeckAction || null : null;
+}
+
+function restoreTemporaryViewsAfterRemote(zoneBrowse, handPeek) {
+  state.zoneBrowse = null;
+  state.handPeek = null;
+
+  const browse = normalizeZoneBrowseAfterRemote(zoneBrowse);
+  if (browse) {
+    state.zoneBrowse = browse;
+    return;
+  }
+
+  if (handPeek?.owner && state.players[handPeek.owner]) {
+    state.handPeek = handPeek;
+  }
+}
+
+function normalizeZoneBrowseAfterRemote(zoneBrowse) {
+  if (!zoneBrowse?.owner || !zoneBrowse.zone) return null;
+  const cards = state.players[zoneBrowse.owner]?.[zoneBrowse.zone];
+  if (!Array.isArray(cards)) return null;
+
+  const browse = clonePlain(zoneBrowse);
+  if (Array.isArray(browse.uids)) {
+    const liveUids = new Set(cards.map((card) => card.uid));
+    browse.uids = browse.uids.filter((uid) => liveUids.has(uid));
+    if (!browse.uids.length) return null;
+  }
+  return browse;
 }
 
 function buildRoomPayload() {
