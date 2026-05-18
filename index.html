@@ -21,34 +21,94 @@
       src="https://www.gstatic.com/firebasejs/12.7.0/firebase-database-compat.js"
       defer
     ></script>
-    <script src="./app.js?v=20260518-seating-pending-row" defer></script>
+    <script src="./app.js?v=20260518-layout-menu" defer></script>
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">local deck image prototype</p>
-          <h1>Remote Duel Mat</h1>
+        <button
+          class="menu-button"
+          id="menuButton"
+          type="button"
+          aria-label="メニューを開く"
+          aria-controls="appMenu"
+          aria-expanded="false"
+        >
+          <span></span>
+          <span></span>
+          <span></span>
+        </button>
+        <div class="header-title">
+          <p class="eyebrow">Remote Duel</p>
+          <h1>対戦マット</h1>
         </div>
-        <div class="deck-toolbar" aria-label="デッキ読込">
-          <div class="deck-chip">
-            <span>自分</span>
-            <strong id="deckName-self">未読込</strong>
-            <label class="file-button">
-              ZIP
-              <input id="zipInput-self" type="file" accept=".zip" />
-            </label>
-          </div>
-          <div class="deck-chip">
-            <span>相手</span>
-            <strong id="deckName-opponent">未読込</strong>
-            <label class="file-button">
-              ZIP
-              <input id="zipInput-opponent" type="file" accept=".zip" />
-            </label>
-          </div>
-        </div>
+        <strong class="header-sync-status" id="headerSyncStatus">Firebase初期化中</strong>
       </header>
+
+      <div class="menu-backdrop" id="menuBackdrop" hidden></div>
+      <aside class="app-menu" id="appMenu" aria-label="メニュー" hidden>
+        <div class="menu-header">
+          <div>
+            <p class="eyebrow">settings</p>
+            <h2>メニュー</h2>
+          </div>
+          <button class="subtle-button menu-close-button" id="menuCloseButton" type="button">
+            閉じる
+          </button>
+        </div>
+
+        <section class="menu-section">
+          <h3>デッキ読込</h3>
+          <div class="deck-toolbar" aria-label="デッキ読込">
+            <div class="deck-chip">
+              <span>自分</span>
+              <strong id="deckName-self">未読込</strong>
+              <label class="file-button">
+                ZIP
+                <input id="zipInput-self" type="file" accept=".zip" />
+              </label>
+            </div>
+            <div class="deck-chip">
+              <span>相手</span>
+              <strong id="deckName-opponent">未読込</strong>
+              <label class="file-button">
+                ZIP
+                <input id="zipInput-opponent" type="file" accept=".zip" />
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <section class="menu-section room-section">
+          <h3>オンライン対戦</h3>
+          <div class="field-row">
+            <label for="roomIdInput">ルーム</label>
+            <input id="roomIdInput" type="text" autocomplete="off" placeholder="room-1234" />
+          </div>
+          <div class="field-row">
+            <span>担当</span>
+            <strong class="seat-status" id="seatStatus">未接続</strong>
+          </div>
+          <div class="control-grid seat-actions">
+            <button class="primary-button" id="randomSeatButton" type="button" disabled>
+              ランダム
+            </button>
+            <button class="subtle-button" id="claimFirstButton" type="button" disabled>
+              自分が先攻
+            </button>
+            <button class="subtle-button" id="claimSecondButton" type="button" disabled>
+              自分が後攻
+            </button>
+          </div>
+          <div class="control-grid">
+            <button class="primary-button" id="joinRoomButton" type="button">接続</button>
+            <button class="subtle-button" id="leaveRoomButton" type="button" disabled>
+              切断
+            </button>
+          </div>
+          <p class="sync-status" id="syncStatus">未接続</p>
+        </section>
+      </aside>
 
       <main class="table-layout">
         <section class="play-area" aria-label="対戦盤面">
@@ -56,7 +116,7 @@
             <div class="player-side opponent-side" id="lane-opponent"></div>
             <div class="middle-line" data-empty-pending="true">
               <div class="pending-buttons" id="pendingButtons"></div>
-              <span id="statusText">デッキZIPを読み込むか、サンプルを使って開始できます。</span>
+              <span id="statusText">デッキZIPを読み込んで開始できます。</span>
             </div>
             <div class="player-side self-side" id="lane-self"></div>
             <div class="reveal-layer" id="revealLayer" hidden>
@@ -68,36 +128,6 @@
         <aside class="command-panel" aria-label="操作パネル">
           <section class="player-readout top-readout" id="opponentInfo"></section>
 
-          <section class="control-section room-section">
-            <h2>オンライン対戦</h2>
-            <div class="field-row">
-              <label for="roomIdInput">ルーム</label>
-              <input id="roomIdInput" type="text" autocomplete="off" placeholder="room-1234" />
-            </div>
-            <div class="field-row">
-              <span>担当</span>
-              <strong class="seat-status" id="seatStatus">未接続</strong>
-            </div>
-            <div class="control-grid seat-actions">
-              <button class="primary-button" id="randomSeatButton" type="button" disabled>
-                ランダム
-              </button>
-              <button class="subtle-button" id="claimFirstButton" type="button" disabled>
-                自分が先攻
-              </button>
-              <button class="subtle-button" id="claimSecondButton" type="button" disabled>
-                自分が後攻
-              </button>
-            </div>
-            <div class="control-grid">
-              <button class="primary-button" id="joinRoomButton" type="button">接続</button>
-              <button class="subtle-button" id="leaveRoomButton" type="button" disabled>
-                切断
-              </button>
-            </div>
-            <p class="sync-status" id="syncStatus">未接続</p>
-          </section>
-
           <section class="control-section">
             <div class="turn-badge" id="turnBadge">待機中</div>
             <div class="field-row">
@@ -107,22 +137,17 @@
                 <option value="opponent">相手</option>
               </select>
             </div>
-            <div class="control-grid">
-              <button class="subtle-button" id="sampleDeckButton" type="button">サンプル</button>
-              <button class="subtle-button" id="resetButton" type="button">リセット</button>
-              <button class="primary-button" id="setupButton" type="button">開始</button>
-              <button class="subtle-button" id="untapButton" type="button">全アンタップ</button>
+            <div class="control-grid game-control-grid">
+              <button class="primary-button" id="setupButton" type="button">ゲーム開始</button>
+              <button class="subtle-button" id="resetButton" type="button">ゲーム終了</button>
               <button class="subtle-button wide-button" id="extraTurnButton" type="button">
                 exターン追加
               </button>
             </div>
-            <button class="end-turn-button" id="endTurnButton" type="button">次のターンへ</button>
-          </section>
-
-          <section class="deck-action-section">
-            <h2>山札操作</h2>
-            <div class="deck-action-grid">
-              <button class="subtle-button wide-button" id="drawButton" type="button">ドロー</button>
+            <button class="end-turn-button" id="endTurnButton" type="button">ターン終了</button>
+            <div class="control-grid turn-control-grid">
+              <button class="subtle-button" id="untapButton" type="button">全アンタップ</button>
+              <button class="subtle-button" id="drawButton" type="button">ドロー</button>
             </div>
           </section>
 

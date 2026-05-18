@@ -98,7 +98,11 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 function bindElements() {
-  els.sampleDeckButton = document.querySelector("#sampleDeckButton");
+  els.menuButton = document.querySelector("#menuButton");
+  els.menuCloseButton = document.querySelector("#menuCloseButton");
+  els.menuBackdrop = document.querySelector("#menuBackdrop");
+  els.appMenu = document.querySelector("#appMenu");
+  els.headerSyncStatus = document.querySelector("#headerSyncStatus");
   els.resetButton = document.querySelector("#resetButton");
   els.setupButton = document.querySelector("#setupButton");
   els.untapButton = document.querySelector("#untapButton");
@@ -165,17 +169,6 @@ function bindEvents() {
     render();
   });
 
-  els.sampleDeckButton.addEventListener("click", async () => {
-    state.decks.self = createSampleDeck("self");
-    state.decks.opponent = createSampleDeck("opponent");
-    hydratePlayerImages("self");
-    hydratePlayerImages("opponent");
-    await saveDeck("self", state.decks.self);
-    await saveDeck("opponent", state.decks.opponent);
-    pushLog("サンプルデッキを読み込みました");
-    render();
-  });
-
   els.setupButton.addEventListener("click", setupGame);
   els.untapButton.addEventListener("click", () => untapPlayer(state.turn));
   els.undoButton.addEventListener("click", undoLastAction);
@@ -188,9 +181,36 @@ function bindEvents() {
   els.randomSeatButton.addEventListener("click", () => runRoomAction(randomizeSeats));
   els.claimFirstButton.addEventListener("click", () => runRoomAction(() => claimSeat("self")));
   els.claimSecondButton.addEventListener("click", () => runRoomAction(() => claimSeat("opponent")));
+  els.menuButton.addEventListener("click", toggleMenu);
+  els.menuCloseButton.addEventListener("click", closeMenu);
+  els.menuBackdrop.addEventListener("click", closeMenu);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeMenu();
+  });
   document.addEventListener("click", handleDocumentClick);
   window.addEventListener("pointermove", handlePointerMove);
   window.addEventListener("pointerup", handlePointerUp);
+}
+
+function toggleMenu() {
+  if (els.appMenu.hidden) {
+    openMenu();
+    return;
+  }
+  closeMenu();
+}
+
+function openMenu() {
+  els.appMenu.hidden = false;
+  els.menuBackdrop.hidden = false;
+  els.menuButton.setAttribute("aria-expanded", "true");
+}
+
+function closeMenu() {
+  if (!els.appMenu || els.appMenu.hidden) return;
+  els.appMenu.hidden = true;
+  els.menuBackdrop.hidden = true;
+  els.menuButton.setAttribute("aria-expanded", "false");
 }
 
 function getClientId() {
@@ -353,7 +373,7 @@ function generateRoomId() {
 }
 
 function renderRoomControls() {
-  if (!els.syncStatus) return;
+  if (!els.syncStatus || !els.headerSyncStatus) return;
   if (assignedLocalSlot()) {
     els.viewerSelect.value = roomSync.localSlot;
   }
@@ -374,6 +394,24 @@ function renderRoomControls() {
   els.seatStatus.textContent = seatStatusText();
   els.syncStatus.textContent = roomSync.status || "未接続";
   els.syncStatus.className = `sync-status ${roomSync.statusType || ""}`.trim();
+  els.headerSyncStatus.textContent = headerConnectionStatus();
+  els.headerSyncStatus.className = `header-sync-status ${headerConnectionType()}`.trim();
+}
+
+function headerConnectionStatus() {
+  if (roomSync.connected) {
+    return assignedLocalSlot() ? `接続中 / ${seatStatusText()}` : "接続中 / 担当未決定";
+  }
+  if (roomSync.connecting) return "接続中...";
+  if (roomSync.statusType === "error") return "接続エラー";
+  if (roomSync.user) return "未接続";
+  return "準備中";
+}
+
+function headerConnectionType() {
+  if (roomSync.statusType === "error") return "error";
+  if (roomSync.connected) return "connected";
+  return "pending";
 }
 
 async function runRoomAction(action) {
@@ -649,7 +687,7 @@ function scopedCardId(owner, cardId) {
 function setupGame() {
   const loadedSlots = Object.keys(PLAYERS).filter((slot) => state.decks[slot]);
   if (loadedSlots.length === 0) {
-    alert("先にデッキZIPを読み込むか、サンプルを使ってください。");
+    alert("先にデッキZIPを読み込んでください。");
     return;
   }
 
@@ -1319,6 +1357,21 @@ function renderRevealArea() {
     group.appendChild(row);
     els.revealArea.appendChild(group);
   });
+
+  if (state.pendingShieldCheckReveal) {
+    const note = document.createElement("div");
+    note.className = "reveal-note";
+
+    const text = document.createElement("p");
+    text.textContent =
+      "開示するカードを選んでOK。選ばなかったカードはそのまま手札に加わります。";
+    note.appendChild(text);
+
+    const button = actionButton("OK", revealSelectedShieldCheckCards);
+    button.classList.add("primary-button");
+    note.appendChild(button);
+    els.revealArea.appendChild(note);
+  }
 
   const revealActions = [];
   if (visibleGroups.some(({ zone }) => zone === "judge")) {
@@ -2050,7 +2103,7 @@ function renderStatus() {
   els.statusText.textContent =
     ready > 0
       ? `${ready}/2 デッキ読込済み。${latestAction ? `最新: ${latestAction}` : `現在は${turnLabel}のターンです。`}`
-      : "デッキZIPを読み込むか、サンプルを使って開始できます。";
+      : "デッキZIPを読み込んで開始できます。";
   els.undoButton.disabled = !state.undoStack.length;
 }
 
@@ -2433,10 +2486,7 @@ function getBatchSelectionActions(refs) {
         ["battle", "場に出す"],
       ];
     }
-    return [
-      ["shield-check-reveal", "開示する"],
-      ["hand", "手札に加える"],
-    ];
+    return [["shield-check-reveal", "開示する"]];
   }
   if (isDeckBrowseSelection(refs)) {
     return [
