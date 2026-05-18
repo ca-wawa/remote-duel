@@ -569,6 +569,30 @@ button:disabled {
   white-space: nowrap;
 }
 
+.reveal-group-header {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.reveal-select-all {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(21, 92, 61, 0.22);
+  border-radius: 7px;
+  background: #eef7f1;
+  color: #155c3d;
+  font-size: 0.72rem;
+  font-weight: 950;
+}
+
+.reveal-select-all:hover {
+  border-color: rgba(21, 92, 61, 0.48);
+  background: #e1f0e7;
+}
+
 .reveal-cards {
   min-width: 0;
   padding: 8px 4px 10px;

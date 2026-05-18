@@ -1485,13 +1485,29 @@ function renderRevealArea() {
   }
 
   els.revealLayer.hidden = false;
-  visibleGroups.forEach(({ slot, zone, cards, label: groupLabel, forceVisible, visibleUids }) => {
+  visibleGroups.forEach(
+    ({ slot, zone, cards, label: groupLabel, forceVisible, visibleUids, isTemporary }) => {
     const group = document.createElement("div");
     group.className = "reveal-group";
+
+    const header = document.createElement("div");
+    header.className = "reveal-group-header";
     const label = document.createElement("span");
     label.className = "reveal-label";
     label.textContent = groupLabel;
-    group.appendChild(label);
+    header.appendChild(label);
+    if (isTemporary && cards.length) {
+      const selectAll = document.createElement("button");
+      selectAll.type = "button";
+      selectAll.className = "reveal-select-all";
+      selectAll.textContent = "全選択";
+      selectAll.addEventListener("click", (event) => {
+        event.stopPropagation();
+        selectRevealGroupCards(slot, zone, cards);
+      });
+      header.appendChild(selectAll);
+    }
+    group.appendChild(header);
 
     const row = document.createElement("div");
     row.className = "reveal-cards";
@@ -1516,7 +1532,8 @@ function renderRevealArea() {
     }
     group.appendChild(row);
     els.revealArea.appendChild(group);
-  });
+    },
+  );
 
   if (state.pendingShieldCheckReveal) {
     const owner = state.pendingShieldCheckReveal.owner;
@@ -2484,6 +2501,15 @@ function toggleSelection(ref) {
     (selected) => selected.owner === ref.owner && selected.zone === ref.zone,
   );
   state.selected = sameGroup ? [...current, ref] : [ref];
+}
+
+function selectRevealGroupCards(owner, zone, cards) {
+  state.pendingShieldAction = null;
+  state.pendingDeckAction = null;
+  state.handMenuOwner = null;
+  state.deckMenuOwner = null;
+  state.selected = cards.map((card) => ({ owner, zone, uid: card.uid }));
+  render();
 }
 
 function isSelected(uid) {
