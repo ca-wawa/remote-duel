@@ -48,6 +48,7 @@ const state = {
     opponent: emptyPlayerState(),
   },
   viewer: "self",
+  firstPlayer: "self",
   turn: "self",
   turnCount: {
     self: 1,
@@ -155,8 +156,9 @@ function bindEvents() {
       const file = event.target.files?.[0];
       if (!file) return;
       try {
+        const targetSlot = deckInputTargetSlot(slot);
         await importZipDeck(slot, file);
-        pushLog(`${actionPlayerLabel(slot)}のデッキを読み込みました`);
+        pushLog(`${actionPlayerLabel(targetSlot)}のデッキを読み込みました`);
       } catch (error) {
         console.error(error);
         pushLog(`読込エラー: ${error.message}`);
@@ -188,9 +190,13 @@ function bindEvents() {
   els.drawButton.addEventListener("click", () => drawCards(state.viewer, 1));
   els.joinRoomButton.addEventListener("click", connectRoom);
   els.leaveRoomButton.addEventListener("click", disconnectRoom);
-  els.randomSeatButton.addEventListener("click", () => runRoomAction(randomizeSeats));
-  els.claimFirstButton.addEventListener("click", () => runRoomAction(() => claimSeat("self")));
-  els.claimSecondButton.addEventListener("click", () => runRoomAction(() => claimSeat("opponent")));
+  els.randomSeatButton.addEventListener("click", () => runRoomAction(randomizeFirstPlayer));
+  els.claimFirstButton.addEventListener("click", () =>
+    runRoomAction(() => chooseFirstPlayer(assignedLocalSlot())),
+  );
+  els.claimSecondButton.addEventListener("click", () =>
+    runRoomAction(() => chooseFirstPlayer(opponentOf(assignedLocalSlot()))),
+  );
   els.menuButton.addEventListener("click", toggleMenu);
   els.menuCloseButton.addEventListener("click", closeMenu);
   els.menuBackdrop.addEventListener("click", closeMenu);
@@ -323,6 +329,10 @@ async function connectRoom() {
     });
     roomSync.presenceRef.onDisconnect().remove();
     roomSync.presenceWatchRef.on("value", handlePresenceSnapshot);
+    await claimOpenPlayerSlot();
+    if (!assignedLocalSlot()) {
+      throw new Error("この部屋は満席です");
+    }
 
     const snapshot = await roomSync.roomRef.once("value");
     const payload = snapshot.val();
@@ -389,6 +399,7 @@ function generateRoomId() {
 
 function renderRoomControls() {
   if (!els.syncStatus) return;
+  renderViewerLabels();
   if (assignedLocalSlot()) {
     els.viewerSelect.value = roomSync.localSlot;
   }
@@ -397,10 +408,10 @@ function renderRoomControls() {
   els.viewerSelect.disabled = roomSync.connected;
   els.joinRoomButton.disabled = roomSync.connected || roomSync.connecting;
   els.leaveRoomButton.disabled = !roomSync.connected && !roomSync.connecting;
-  els.randomSeatButton.disabled = !roomSync.connected || roomSync.connecting;
-  els.claimFirstButton.disabled = !roomSync.connected || roomSync.connecting;
-  els.claimSecondButton.disabled = !roomSync.connected || roomSync.connecting;
   const needsSeat = roomSync.connected && !assignedLocalSlot();
+  els.randomSeatButton.disabled = !roomSync.connected || roomSync.connecting || needsSeat;
+  els.claimFirstButton.disabled = !roomSync.connected || roomSync.connecting || needsSeat;
+  els.claimSecondButton.disabled = !roomSync.connected || roomSync.connecting || needsSeat;
   els.setupButton.disabled = needsSeat;
   els.drawButton.disabled = needsSeat;
   els.untapButton.disabled = needsSeat;
@@ -439,64 +450,61 @@ async function runRoomAction(action) {
   }
 }
 
-async function claimSeat(slot) {
+async function claimOpenPlayerSlot() {
   if (!roomSync.connected || !roomSync.roomRef) return;
   const activeClientIds = await readActiveClientIds();
   const result = await updateRoomSeats((seats) => {
-    const currentOwner = seats[slot];
-    if (currentOwner && currentOwner !== roomSync.clientId && activeClientIds.has(currentOwner)) {
-      return null;
+    const next = removeInactiveSeats(removeClientFromSeats(seats, roomSync.clientId), activeClientIds);
+    if (!next.self) {
+      next.self = roomSync.clientId;
+      return next;
     }
-    const next = removeClientFromSeats(seats, roomSync.clientId);
-    next[slot] = roomSync.clientId;
-    return next;
+    if (!next.opponent) {
+      next.opponent = roomSync.clientId;
+      return next;
+    }
+    if (slotForClient(next, roomSync.clientId)) return next;
+    return null;
   });
 
   if (!result.committed) {
-    roomSync.status = `${playerOrderLabel(slot)}は使用中です`;
+    roomSync.status = "この部屋は満席です";
     roomSync.statusType = "error";
     renderRoomControls();
     return;
   }
-  await updatePresenceSlot(slot);
+  const slot = slotForClient(normalizeSeats(result.snapshot.val() || {}), roomSync.clientId);
+  if (slot) await updatePresenceSlot(slot);
   applySeats(result.snapshot.val() || {});
-  roomSync.status = `接続中: ${roomSync.roomId} / ${seatStatusText()}`;
-  roomSync.statusType = "connected";
-  render();
 }
 
-async function randomizeSeats() {
-  if (!roomSync.connected || !roomSync.roomRef) return;
+async function chooseFirstPlayer(firstSlot) {
+  if (!roomSync.connected || !assignedLocalSlot()) return;
+  if (!["self", "opponent"].includes(firstSlot)) return;
+  saveUndoSnapshot();
+  state.firstPlayer = firstSlot;
+  state.turn = firstSlot;
+  state.turnCount = startingTurnCount(firstSlot);
+  state.extraTurns = { self: 0, opponent: 0 };
+  clearSelection();
+  closeTemporaryViews();
+  pushLog(`${actionPlayerLabel(firstSlot)}が先攻になりました`);
+  render();
+  await writeRoomState({ force: true });
+}
+
+async function randomizeFirstPlayer() {
+  if (!roomSync.connected || !roomSync.roomRef || !assignedLocalSlot()) return;
   const activeClientIds = await readActiveClientIds();
   const peerClientIds = [...activeClientIds].filter((clientId) => clientId !== roomSync.clientId);
-  if (peerClientIds.length > 1) {
+  if (peerClientIds.length !== 1) {
     roomSync.status = "ランダム決定は2人接続の状態で実行してください";
     roomSync.statusType = "error";
     renderRoomControls();
     return;
   }
-  const otherClientId = peerClientIds[0] || "";
-  const localSlot = Math.random() < 0.5 ? "self" : "opponent";
-  const remoteSlot = opponentOf(localSlot);
-
-  const result = await updateRoomSeats(() => {
-    const next = {};
-    next[localSlot] = roomSync.clientId;
-    if (otherClientId) next[remoteSlot] = otherClientId;
-    return next;
-  });
-
-  if (!result.committed) {
-    roomSync.status = "ランダム決定に失敗しました。席を確認してください";
-    roomSync.statusType = "error";
-    renderRoomControls();
-    return;
-  }
-  await updatePresenceSlot(localSlot);
-  applySeats(result.snapshot.val() || {});
-  roomSync.status = `接続中: ${roomSync.roomId} / ${seatStatusText()}`;
-  roomSync.statusType = "connected";
-  render();
+  const firstSlot = Math.random() < 0.5 ? "self" : "opponent";
+  await chooseFirstPlayer(firstSlot);
 }
 
 async function updateRoomSeats(updater) {
@@ -568,8 +576,10 @@ function removeClientFromSeats(seats, clientId) {
   return seats;
 }
 
-function seatOccupiedByAnotherActiveClient(occupant, activeClientIds, allowedClientId) {
-  return occupant && occupant !== allowedClientId && activeClientIds.has(occupant);
+function removeInactiveSeats(seats, activeClientIds) {
+  if (seats.self && !activeClientIds.has(seats.self)) delete seats.self;
+  if (seats.opponent && !activeClientIds.has(seats.opponent)) delete seats.opponent;
+  return seats;
 }
 
 function emptyPlayerState() {
@@ -619,7 +629,7 @@ async function importZipDeck(slot, file) {
 
   state.decks[slot] = deck;
   await saveDeck(slot, deck);
-  hydratePlayerImages(slot);
+  hydratePlayerImages(deckInputTargetSlot(slot));
 }
 
 function findDeckJson(zip) {
@@ -714,29 +724,37 @@ function scopedCardId(owner, cardId) {
 }
 
 function setupGame() {
-  const loadedSlots = Object.keys(PLAYERS).filter((slot) => state.decks[slot]);
+  const localSlot = assignedLocalSlot();
+  if (roomSync.connected && !localSlot) {
+    alert("先に接続メニューで先攻/後攻を決めてください。");
+    return;
+  }
+
+  const remoteMode = roomSync.connected && localSlot;
+  const targetSlots = remoteMode ? [localSlot] : Object.keys(PLAYERS);
+  const loadedSlots = remoteMode
+    ? state.decks.self
+      ? [localSlot]
+      : []
+    : targetSlots.filter((slot) => state.decks[slot]);
   if (loadedSlots.length === 0) {
     alert("先にデッキZIPを読み込んでください。");
     return;
   }
 
   saveUndoSnapshot();
-  Object.keys(PLAYERS).forEach((slot) => {
-    if (!state.decks[slot]) {
-      state.players[slot] = emptyPlayerState();
+  targetSlots.forEach((slot) => {
+    const deck = remoteMode ? state.decks.self : state.decks[slot];
+    if (!deck) {
+      if (!remoteMode) state.players[slot] = emptyPlayerState();
       return;
     }
-    const player = emptyPlayerState();
-    player.deck = instantiateDeck(state.decks[slot], slot);
-    player.shields = player.deck.splice(0, 5);
-    player.shields.forEach((card) => assignShieldNumber(player, card));
-    player.hand = player.deck.splice(0, 5);
-    state.players[slot] = player;
+    setupPlayerFromDeck(slot, deck);
   });
 
-  state.turn = "self";
-  state.viewer = preferredViewerSlot("self");
-  state.turnCount = { self: 1, opponent: 0 };
+  state.turn = state.firstPlayer;
+  state.viewer = preferredViewerSlot(state.firstPlayer);
+  state.turnCount = startingTurnCount(state.firstPlayer);
   state.extraTurns = { self: 0, opponent: 0 };
   state.selected = [];
   state.pendingShieldAction = null;
@@ -745,8 +763,21 @@ function setupGame() {
   state.handMenuOwner = null;
   state.deckMenuOwner = null;
   closeTemporaryViews();
-  pushLog("初期手札5枚、シールド5枚で開始");
+  pushLog(
+    remoteMode
+      ? `${actionPlayerLabel(localSlot)}の初期手札5枚、シールド5枚で開始`
+      : "初期手札5枚、シールド5枚で開始",
+  );
   render();
+}
+
+function setupPlayerFromDeck(slot, deck = state.decks[slot]) {
+  const player = emptyPlayerState();
+  player.deck = instantiateDeck(deck, slot);
+  player.shields = player.deck.splice(0, 5);
+  player.shields.forEach((card) => assignShieldNumber(player, card));
+  player.hand = player.deck.splice(0, 5);
+  state.players[slot] = player;
 }
 
 function drawCard(slot) {
@@ -1267,9 +1298,9 @@ function resetGame() {
   saveUndoSnapshot();
   state.players.self = emptyPlayerState();
   state.players.opponent = emptyPlayerState();
-  state.turn = "self";
-  state.viewer = preferredViewerSlot("self");
-  state.turnCount = { self: 1, opponent: 0 };
+  state.turn = state.firstPlayer;
+  state.viewer = preferredViewerSlot(state.firstPlayer);
+  state.turnCount = startingTurnCount(state.firstPlayer);
   state.extraTurns = { self: 0, opponent: 0 };
   state.selected = [];
   state.pendingShieldAction = null;
@@ -1284,6 +1315,7 @@ function resetGame() {
 
 function render() {
   enforceLocalPerspective();
+  renderViewerLabels();
   els.viewerSelect.value = state.viewer;
 
   Object.keys(PLAYERS).forEach((slot) => {
@@ -1757,7 +1789,8 @@ function renderPlayerInfo(slot, target) {
 
   const title = document.createElement("h2");
   const order = playerOrderLabel(slot);
-  title.textContent = `${playerLabel(slot)}（${order}${state.turn === slot ? "・行動中" : ""}）`;
+  const seat = roomSync.connected ? `${playerSeatLabel(slot)} / ` : "";
+  title.textContent = `${playerLabel(slot)}（${seat}${order}${state.turn === slot ? "・行動中" : ""}）`;
   header.appendChild(title);
 
   if (target === els.opponentInfo) {
@@ -2310,22 +2343,30 @@ function renderLog() {
 }
 
 function renderStatus() {
-  const ready = Object.keys(PLAYERS).filter((slot) => state.decks[slot]).length;
+  const ready = Object.keys(PLAYERS).some((slot) => state.decks[slot]) || hasStartedGameState();
   const turnLabel = playerLabel(state.turn);
   const orderLabel = playerOrderLabel(state.turn);
   const extraTurnText = state.extraTurns[state.turn] ? ` EX+${state.extraTurns[state.turn]}` : "";
   els.turnBadge.textContent =
-    ready > 0
+    ready
       ? `${turnLabel}（${orderLabel}） ${state.turnCount[state.turn]}ターン目${extraTurnText}`
       : "待機中";
   const latestAction = latestLogMessage();
   els.statusText.textContent =
-    ready > 0
+    ready
       ? latestAction
         ? `最新: ${latestAction}`
         : `${turnLabel}のターンです。`
       : "デッキZIPを読み込んで開始できます。";
   els.undoButton.disabled = !state.undoStack.length;
+}
+
+function hasStartedGameState() {
+  return Object.values(state.players).some((player) =>
+    ["deck", "hand", "shields", "mana", "battle", "graveyard", "pending", "revealed"].some(
+      (zone) => player[zone]?.length,
+    ),
+  );
 }
 
 function latestLogMessage() {
@@ -2999,6 +3040,7 @@ function saveUndoSnapshot() {
     clonePlain({
       players: state.players,
       viewer: state.viewer,
+      firstPlayer: state.firstPlayer,
       turn: state.turn,
       turnCount: state.turnCount,
       extraTurns: state.extraTurns,
@@ -3023,6 +3065,7 @@ function undoLastAction() {
 
   state.players = clonePlain(snapshot.players);
   state.viewer = snapshot.viewer || "self";
+  state.firstPlayer = snapshot.firstPlayer || "self";
   state.turn = snapshot.turn;
   state.turnCount = clonePlain(snapshot.turnCount);
   state.extraTurns = clonePlain(snapshot.extraTurns || { self: 0, opponent: 0 });
@@ -3060,13 +3103,44 @@ function closeTemporaryViews() {
 }
 
 function playerOrderLabel(slot) {
-  return slot === "self" ? "先攻" : "後攻";
+  return slot === state.firstPlayer ? "先攻" : "後攻";
+}
+
+function playerSeatLabel(slot) {
+  return slot === "self" ? "A" : "B";
+}
+
+function startingTurnCount(firstSlot = state.firstPlayer) {
+  return {
+    self: firstSlot === "self" ? 1 : 0,
+    opponent: firstSlot === "opponent" ? 1 : 0,
+  };
 }
 
 function playerLabel(slot) {
   const localSlot = assignedLocalSlot();
   if (!localSlot) return PLAYERS[slot].label;
   return slot === localSlot ? "自分" : "相手";
+}
+
+function renderViewerLabels() {
+  if (!els.viewerSelect) return;
+  Object.keys(PLAYERS).forEach((slot) => {
+    const option = els.viewerSelect.querySelector(`option[value="${slot}"]`);
+    if (option) option.textContent = playerLabel(slot);
+  });
+}
+
+function deckInputTargetSlot(uiSlot) {
+  const localSlot = assignedLocalSlot();
+  if (!localSlot) return uiSlot;
+  return uiSlot === "self" ? localSlot : opponentOf(localSlot);
+}
+
+function deckSlotForPlayerSlot(playerSlot) {
+  const localSlot = assignedLocalSlot();
+  if (!localSlot) return playerSlot;
+  return playerSlot === localSlot ? "self" : "opponent";
 }
 
 function actionPlayerLabel(slot) {
@@ -3102,11 +3176,15 @@ function assignedLocalSlot() {
   return ["self", "opponent"].includes(roomSync.localSlot) ? roomSync.localSlot : "";
 }
 
+function normalizePlayerSlot(slot, fallback = "self") {
+  return ["self", "opponent"].includes(slot) ? slot : fallback;
+}
+
 function seatStatusText() {
   if (!roomSync.connected && !roomSync.connecting) return "未接続";
   const slot = assignedLocalSlot();
   if (!slot) return "未決定";
-  return `自分が${playerOrderLabel(slot)}`;
+  return `自分は${playerSeatLabel(slot)} / ${playerOrderLabel(slot)}`;
 }
 
 function opponentOf(slot) {
@@ -3205,8 +3283,9 @@ function applyRoomPayload(payload) {
   roomSync.applyingRemote = true;
   state.players = hydrateSyncedPlayers(payload.state.players || {});
   state.viewer = preferredViewerSlot(state.viewer || "self");
-  state.turn = payload.state.turn || "self";
-  state.turnCount = clonePlain(payload.state.turnCount || { self: 1, opponent: 0 });
+  state.firstPlayer = normalizePlayerSlot(payload.state.firstPlayer, "self");
+  state.turn = normalizePlayerSlot(payload.state.turn, state.firstPlayer);
+  state.turnCount = clonePlain(payload.state.turnCount || startingTurnCount(state.firstPlayer));
   state.extraTurns = clonePlain(payload.state.extraTurns || { self: 0, opponent: 0 });
   state.log = logData;
   state.pendingShieldCheckReveal = normalizeSyncedShieldCheckReveal(
@@ -3279,7 +3358,8 @@ function normalizeHandBrowseAfterRemote(handBrowse) {
 function buildRoomPayload() {
   const stateData = {
     players: sanitizePlayersForRoom(),
-    turn: state.turn,
+    firstPlayer: normalizePlayerSlot(state.firstPlayer, "self"),
+    turn: normalizePlayerSlot(state.turn, state.firstPlayer),
     turnCount: clonePlain(state.turnCount),
     extraTurns: clonePlain(state.extraTurns),
     pendingShieldCheckReveal: normalizeLocalShieldCheckReveal(),
@@ -3389,7 +3469,7 @@ function hydrateSyncedCard(slot, card) {
 }
 
 function resolveLocalCardImageUrl(slot, card) {
-  const deck = state.decks[slot];
+  const deck = state.decks[deckSlotForPlayerSlot(slot)];
   if (!deck) return "";
   const rawCardId = unscopedCardId(card.cardId || "");
   const match = deck.cards.find(
