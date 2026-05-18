@@ -87,6 +87,7 @@ const roomSync = {
   user: null,
   roomId: "",
   localSlot: "",
+  lastLocalSlot: "",
   seats: {},
   roomRef: null,
   presenceRef: null,
@@ -140,6 +141,7 @@ function bindElements() {
   els.drawButton = document.querySelector("#drawButton");
   els.roomIdInput = document.querySelector("#roomIdInput");
   els.seatStatus = document.querySelector("#seatStatus");
+  els.swapDecksButton = document.querySelector("#swapDecksButton");
   els.randomSeatButton = document.querySelector("#randomSeatButton");
   els.claimFirstButton = document.querySelector("#claimFirstButton");
   els.claimSecondButton = document.querySelector("#claimSecondButton");
@@ -180,6 +182,7 @@ function bindEvents() {
       render();
       return;
     }
+    roomSync.lastLocalSlot = "";
     state.viewer = event.target.value;
     clearSelection();
     render();
@@ -192,6 +195,7 @@ function bindEvents() {
   els.extraTurnButton.addEventListener("click", addExtraTurn);
   els.resetButton.addEventListener("click", resetGame);
   els.drawButton.addEventListener("click", () => drawCards(state.viewer, 1));
+  els.swapDecksButton.addEventListener("click", swapLoadedDecks);
   els.joinRoomButton.addEventListener("click", connectRoom);
   els.leaveRoomButton.addEventListener("click", disconnectRoom);
   els.randomSeatButton.addEventListener("click", () => runRoomAction(randomizeFirstPlayer));
@@ -374,6 +378,11 @@ function disconnectRoom(options = {}) {
     roomSync.presenceRef = null;
   }
 
+  const previousSlot = assignedLocalSlot();
+  if (previousSlot) {
+    roomSync.lastLocalSlot = previousSlot;
+    state.viewer = previousSlot;
+  }
   roomSync.roomRef = null;
   roomSync.connected = false;
   roomSync.connecting = false;
@@ -554,6 +563,7 @@ async function updatePresenceSlot(slot) {
 function applySeats(rawSeats = {}) {
   roomSync.seats = normalizeSeats(rawSeats);
   roomSync.localSlot = slotForClient(roomSync.seats, roomSync.clientId);
+  if (roomSync.localSlot) roomSync.lastLocalSlot = roomSync.localSlot;
   if (roomSync.connected) {
     roomSync.status = `接続中: ${roomSync.roomId} / ${seatStatusText()}`;
     roomSync.statusType = "connected";
@@ -635,6 +645,18 @@ async function importZipDeck(slot, file) {
   state.roomDecks[deckInputTargetSlot(slot)] = sanitizeDeckDefinition(deck);
   await saveDeck(slot, deck);
   hydratePlayerImages(deckInputTargetSlot(slot));
+}
+
+async function swapLoadedDecks() {
+  [state.decks.self, state.decks.opponent] = [state.decks.opponent, state.decks.self];
+  Object.keys(PLAYERS).forEach((slot) => {
+    const targetSlot = deckInputTargetSlot(slot);
+    state.roomDecks[targetSlot] = sanitizeDeckDefinition(state.decks[slot]);
+  });
+  await Promise.all(Object.keys(PLAYERS).map((slot) => saveDeck(slot, state.decks[slot])));
+  Object.keys(PLAYERS).forEach((slot) => hydratePlayerImages(slot));
+  pushLog("読み込みZIPを入れ替えました");
+  render();
 }
 
 function findDeckJson(zip) {
@@ -3181,7 +3203,7 @@ function startingTurnCount(firstSlot = state.firstPlayer) {
 }
 
 function playerLabel(slot) {
-  const localSlot = assignedLocalSlot();
+  const localSlot = localPerspectiveSlot();
   if (!localSlot) return PLAYERS[slot].label;
   return slot === localSlot ? "自分" : "相手";
 }
@@ -3195,13 +3217,13 @@ function renderViewerLabels() {
 }
 
 function deckInputTargetSlot(uiSlot) {
-  const localSlot = assignedLocalSlot();
+  const localSlot = localPerspectiveSlot();
   if (!localSlot) return uiSlot;
   return uiSlot === "self" ? localSlot : opponentOf(localSlot);
 }
 
 function deckSlotForPlayerSlot(playerSlot) {
-  const localSlot = assignedLocalSlot();
+  const localSlot = localPerspectiveSlot();
   if (!localSlot) return playerSlot;
   return playerSlot === localSlot ? "self" : "opponent";
 }
@@ -3222,21 +3244,25 @@ function formatLogEntry(entry) {
 }
 
 function preferredViewerSlot(fallback = "self") {
-  return assignedLocalSlot() || fallback;
+  return localPerspectiveSlot() || fallback;
 }
 
 function enforceLocalPerspective() {
-  const localSlot = assignedLocalSlot();
+  const localSlot = localPerspectiveSlot();
   if (localSlot) state.viewer = localSlot;
 }
 
 function displayBottomSlot() {
   enforceLocalPerspective();
-  return assignedLocalSlot() || "self";
+  return localPerspectiveSlot() || "self";
 }
 
 function assignedLocalSlot() {
   return ["self", "opponent"].includes(roomSync.localSlot) ? roomSync.localSlot : "";
+}
+
+function localPerspectiveSlot() {
+  return assignedLocalSlot() || normalizePlayerSlot(roomSync.lastLocalSlot, "");
 }
 
 function normalizePlayerSlot(slot, fallback = "self") {
@@ -3665,6 +3691,10 @@ function openDb() {
 async function saveDeck(slot, deck) {
   const db = await openDb();
   await txDone(db, DECK_STORE, "readwrite", (store) => {
+    if (!deck) {
+      store.delete(slot);
+      return;
+    }
     store.put({ slot, deck: serializeDeck(deck) });
   });
   db.close();

@@ -145,6 +145,10 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+.deck-swap-button {
+  min-height: 40px;
+}
+
 .file-button {
   min-width: 56px;
   color: var(--green);
