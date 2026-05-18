@@ -65,6 +65,7 @@ const state = {
   deckMenuOwner: null,
   zoneBrowse: null,
   handPeek: null,
+  handBrowse: null,
   undoStack: [],
   log: [],
 };
@@ -701,6 +702,7 @@ function instantiateDeck(deck, owner) {
         tapped: false,
         faceUp: false,
         stack: [],
+        seals: [],
       });
     }
   });
@@ -943,7 +945,16 @@ function discardBlindHandCards(slot, count) {
 
 function openHandMenu(owner) {
   clearSelection();
-  state.handMenuOwner = owner;
+  openHandBrowse(owner);
+}
+
+function openHandBrowse(owner) {
+  state.handBrowse = { owner, revealedUids: [] };
+  state.handPeek = null;
+  state.zoneBrowse = null;
+  state.handMenuOwner = null;
+  state.deckMenuOwner = null;
+  clearSelection();
   render();
 }
 
@@ -955,6 +966,7 @@ function openDeckMenu(owner) {
 
 function openHandPeek(owner) {
   state.handPeek = { owner };
+  state.handBrowse = null;
   state.zoneBrowse = null;
   state.handMenuOwner = null;
   state.deckMenuOwner = null;
@@ -965,6 +977,12 @@ function openHandPeek(owner) {
 
 function closeHandPeek() {
   state.handPeek = null;
+  clearSelection();
+  render();
+}
+
+function closeHandBrowse() {
+  state.handBrowse = null;
   clearSelection();
   render();
 }
@@ -980,6 +998,7 @@ function openZoneBrowse(owner, zone, options = {}) {
   }
   state.zoneBrowse = browse;
   state.handPeek = null;
+  state.handBrowse = null;
   state.handMenuOwner = null;
   state.deckMenuOwner = null;
   clearSelection();
@@ -1028,12 +1047,16 @@ function moveSelectedTo(zoneKey, options = {}) {
     card.tapped = moveTarget.zone === "battle" || moveTarget.zone === "mana" ? card.tapped : false;
     card.faceUp = faceUpForZone(moveTarget.zone, options);
     card.shieldCheckRevealed = false;
+    if (ref.zone === "battle" && moveTarget.zone !== "battle") {
+      releaseSealsToGraveyard(ref.owner, card);
+    }
     if (moveTarget.zone === "shields") assignShieldNumber(state.players[ref.owner], card);
     insertCardIntoZone(state.players[ref.owner], moveTarget, card);
     movedRefs.push({ owner: ref.owner, zone: moveTarget.zone, uid: card.uid });
   });
 
   removeMovedCardsFromZoneBrowse(movedRefs);
+  removeMovedCardsFromHandBrowse(movedRefs);
   state.selected = [];
   state.pendingShieldAction = null;
   state.pendingDeckAction = null;
@@ -1127,6 +1150,16 @@ function revealSelectedDeckBrowseCards(refs = selectedRefsWithCards()) {
   render();
 }
 
+function revealSelectedHandBrowseCards(refs = selectedRefsWithCards()) {
+  if (!isHandBrowseSelection(refs)) return;
+  const owner = refs[0].ref.owner;
+  const revealedUids = new Set(state.handBrowse.revealedUids || []);
+  refs.forEach(({ ref }) => revealedUids.add(ref.uid));
+  state.handBrowse.revealedUids = [...revealedUids];
+  pushLog(`${actionPlayerLabel(owner)}の手札から${refs.length}枚を確認`);
+  render();
+}
+
 function openSelectedShieldBrowse(refs = selectedRefsWithCards()) {
   if (!isShieldSelection(refs)) return;
   const owner = refs[0].ref.owner;
@@ -1163,7 +1196,7 @@ function canMoveShieldCheckRefs(refs, targetZone) {
 }
 
 function toggleTapped() {
-  const refs = selectedRefsWithCards().filter(({ ref }) => canToggleTapped(ref.zone));
+  const refs = selectedRefsWithCards().filter(({ ref, card }) => canToggleTapped(ref.zone, card));
   if (!refs.length) return;
   saveUndoSnapshot();
   const shouldTap = refs.some(({ card }) => !card.tapped);
@@ -1178,8 +1211,8 @@ function toggleTapped() {
 }
 
 function toggleSingleCardTapped(ref) {
-  if (!canToggleTapped(ref.zone)) return;
   const card = findCardInZone(ref);
+  if (!canToggleTapped(ref.zone, card)) return;
   if (!card) return;
   saveUndoSnapshot();
   card.tapped = !card.tapped;
@@ -1190,11 +1223,12 @@ function toggleSingleCardTapped(ref) {
 
 function untapPlayer(slot) {
   const hasTapped = [...state.players[slot].battle, ...state.players[slot].mana].some(
-    (card) => card.tapped,
+    (card) => card.tapped && !card.seals?.length,
   );
   if (!hasTapped) return;
   saveUndoSnapshot();
   state.players[slot].battle.forEach((card) => {
+    if (card.seals?.length) return;
     card.tapped = false;
   });
   state.players[slot].mana.forEach((card) => {
@@ -1358,13 +1392,31 @@ function renderRevealArea() {
     }
   }
 
+  if (state.handBrowse) {
+    const { owner, revealedUids = [] } = state.handBrowse;
+    const cards = state.players[owner]?.hand || [];
+    if (cards.length) {
+      visibleGroups.push({
+        slot: owner,
+        zone: "hand",
+        cards,
+        label: `${playerLabel(owner)} 手札`,
+        visibleUids: revealedUids,
+        isTemporary: true,
+      });
+    } else {
+      state.handBrowse = null;
+      clearSelection();
+    }
+  }
+
   if (!visibleGroups.length) {
     els.revealLayer.hidden = true;
     return;
   }
 
   els.revealLayer.hidden = false;
-  visibleGroups.forEach(({ slot, zone, cards, label: groupLabel, forceVisible }) => {
+  visibleGroups.forEach(({ slot, zone, cards, label: groupLabel, forceVisible, visibleUids }) => {
     const group = document.createElement("div");
     group.className = "reveal-group";
     const label = document.createElement("span");
@@ -1381,7 +1433,7 @@ function renderRevealArea() {
             slot,
             zone,
             card,
-            forceVisible || canShowCard(slot, zone, card),
+            forceVisible || visibleUids?.includes(card.uid) || canShowCard(slot, zone, card),
             "非公開",
             "compact",
           ),
@@ -1405,7 +1457,7 @@ function renderRevealArea() {
 
     const text = document.createElement("p");
     text.textContent = canResolve
-      ? "開示するカードを選んでOK。選ばなかったカードはそのまま手札に加わります。"
+      ? "開示するカードをすべて選択してください。選ばなかったカードは手札に加わります。"
       : `${playerLabel(owner)}が開示するカードを選んでいます。`;
     note.appendChild(text);
 
@@ -1426,6 +1478,9 @@ function renderRevealArea() {
   }
   if (state.handPeek) {
     revealActions.push(actionButton("終了", closeHandPeek));
+  }
+  if (state.handBrowse) {
+    revealActions.push(actionButton("終了", closeHandBrowse));
   }
   if (revealActions.length) {
     const actions = document.createElement("div");
@@ -1585,6 +1640,7 @@ function renderCard(
   button.dataset.cardUid = card.uid;
   if (isSelected(card.uid)) button.classList.add("selected");
   if (card.stack?.length) button.classList.add("stacked");
+  if (card.seals?.length) button.classList.add("sealed");
   button.type = "button";
   button.draggable = options.draggable !== false;
   button.title = visible ? card.name : hiddenLabel;
@@ -1597,7 +1653,7 @@ function renderCard(
       lastCardClick.owner === slot &&
       lastCardClick.zone === zoneKey &&
       now - lastCardClick.time < 360;
-    if (isDoubleClick && canToggleTapped(zoneKey)) {
+    if (isDoubleClick && canToggleTapped(zoneKey, card)) {
       lastCardClick = null;
       toggleSingleCardTapped({ owner: slot, zone: zoneKey, uid: card.uid });
       return;
@@ -1669,6 +1725,12 @@ function renderCard(
     stackCount.className = "stack-count";
     stackCount.textContent = `+${card.stack.length}`;
     button.appendChild(stackCount);
+  }
+  if (card.seals?.length) {
+    const sealCount = document.createElement("span");
+    sealCount.className = "seal-count";
+    sealCount.textContent = `封${card.seals.length}`;
+    button.appendChild(sealCount);
   }
   const selectedOrder = selectionOrder(card.uid);
   if (selectedOrder) {
@@ -1945,7 +2007,7 @@ function renderSelection() {
     if (actionClass) button.classList.add(actionClass);
     actions.appendChild(button);
   });
-  if (refs.some(({ ref }) => canToggleTapped(ref.zone))) {
+  if (refs.some(({ ref, card }) => canToggleTapped(ref.zone, card))) {
     const shouldTap = refs.some(({ card }) => !card.tapped);
     actions.appendChild(actionButton(shouldTap ? "タップ" : "アンタップ", toggleTapped));
   }
@@ -1965,6 +2027,10 @@ function runSelectionAction(actionKey, refs) {
     revealSelectedDeckBrowseCards(refs);
     return;
   }
+  if (actionKey === "hand-browse-reveal") {
+    revealSelectedHandBrowseCards(refs);
+    return;
+  }
   if (actionKey === "shield-look") {
     openSelectedShieldBrowse(refs);
     return;
@@ -1975,6 +2041,14 @@ function runSelectionAction(actionKey, refs) {
   }
   if (actionKey === "stack-selected") {
     stackSelectedBattleCards(refs);
+    return;
+  }
+  if (actionKey === "add-seal") {
+    addSealToSelectedBattleCards(refs);
+    return;
+  }
+  if (actionKey === "remove-seal") {
+    removeSealFromSelectedBattleCards(refs);
     return;
   }
   if (actionKey.startsWith("deck-") || actionKey === "gachinko-judge") {
@@ -2115,7 +2189,7 @@ function renderShieldCheckRevealChoice(panel) {
 
   const meta = document.createElement("p");
   meta.className = "selection-meta";
-  meta.textContent = "開示するカードをすべて選択してください。選ばなかったカードは手札に加わります。";
+  meta.textContent = `${playerLabel(owner)}のシールドチェック`;
   panel.appendChild(meta);
 
   if (refs.length) {
@@ -2291,6 +2365,9 @@ function zoneActionClass(actionKey) {
       "shield-look": "zone-action-shields",
       "shield-face-up": "zone-action-shields",
       "stack-selected": "zone-action-battle",
+      "add-seal": "zone-action-battle",
+      "remove-seal": "zone-action-graveyard",
+      "hand-browse-reveal": "zone-action-hand",
     }[actionKey] || ""
   );
 }
@@ -2545,8 +2622,59 @@ function detachStackCard(ref, index) {
   const newTopUid = applyStackGroup(parentCard, group);
   const detached = cloneStackCard(removed);
   zoneCards.splice(parentIndex + 1, 0, detached);
-  state.selected = [{ owner: ref.owner, zone: ref.zone, uid: detached.uid || newTopUid }];
+  state.selected = [{ owner: ref.owner, zone: ref.zone, uid: newTopUid }];
   pushLog(`${detached.name} を重なりから外しました`);
+  render();
+}
+
+function addSealToSelectedBattleCards(refs = selectedRefsWithCards()) {
+  const battleRefs = refs.filter(({ ref }) => ref.zone === "battle");
+  if (!battleRefs.length) return;
+  const owner = battleRefs[0].ref.owner;
+  if (!battleRefs.every(({ ref }) => ref.owner === owner)) return;
+  const player = state.players[owner];
+  if (!player.deck.length) {
+    pushLog(`${actionPlayerLabel(owner)}の山札がないため封印をつけられません`);
+    render();
+    return;
+  }
+
+  saveUndoSnapshot();
+  let sealedCount = 0;
+  battleRefs.forEach(({ card }) => {
+    if (!player.deck.length) return;
+    const seal = player.deck.shift();
+    seal.tapped = false;
+    seal.faceUp = false;
+    seal.shieldCheckRevealed = false;
+    seal.stack = [];
+    seal.seals = [];
+    card.seals = card.seals || [];
+    card.seals.push(seal);
+    sealedCount += 1;
+  });
+  state.selected = battleRefs.map(({ ref }) => ref);
+  pushLog(`${actionPlayerLabel(owner)}: ${sealedCount}枚に封印をつけました`);
+  render();
+}
+
+function removeSealFromSelectedBattleCards(refs = selectedRefsWithCards()) {
+  const battleRefs = refs.filter(({ ref, card }) => ref.zone === "battle" && card.seals?.length);
+  if (!battleRefs.length) return;
+  const owner = battleRefs[0].ref.owner;
+  if (!battleRefs.every(({ ref }) => ref.owner === owner)) return;
+
+  saveUndoSnapshot();
+  let removedCount = 0;
+  battleRefs.forEach(({ card }) => {
+    const seal = card.seals.pop();
+    if (!seal) return;
+    prepareCardForGraveyard(seal);
+    state.players[owner].graveyard.push(seal);
+    removedCount += 1;
+  });
+  state.selected = battleRefs.map(({ ref }) => ref);
+  pushLog(`${actionPlayerLabel(owner)}: 封印を${removedCount}枚外しました`);
   render();
 }
 
@@ -2647,9 +2775,22 @@ function getBatchSelectionActions(refs) {
       ["deck", "山札に置く"],
     ];
   }
+  if (isHandBrowseSelection(refs)) {
+    return [
+      ["hand-browse-reveal", "見る"],
+      ["graveyard", "墓地に置く"],
+    ];
+  }
   const actions = getSelectionActions(zones[0]);
-  if (zones[0] === "battle" && refs.length > 1) {
-    return [["stack-selected", "重ねる"], ...actions];
+  if (zones[0] === "battle") {
+    const sealActions = [["add-seal", "封印をつける"]];
+    if (refs.some(({ card }) => card.seals?.length)) {
+      sealActions.push(["remove-seal", "封印を外す"]);
+    }
+    if (refs.length > 1) {
+      return [["stack-selected", "重ねる"], ...sealActions, ...actions];
+    }
+    return [...sealActions, ...actions];
   }
   return actions;
 }
@@ -2738,6 +2879,19 @@ function isDeckBrowseSelection(refs) {
   );
 }
 
+function isHandBrowseSelection(refs) {
+  return (
+    state.handBrowse?.owner &&
+    refs.length > 0 &&
+    refs.every(
+      ({ ref }) =>
+        ref.owner === state.handBrowse.owner &&
+        ref.zone === "hand" &&
+        state.players[ref.owner]?.hand.some((card) => card.uid === ref.uid),
+    )
+  );
+}
+
 function isShieldSelection(refs) {
   return refs.length > 0 && refs.every(({ ref }) => ref.zone === "shields");
 }
@@ -2746,13 +2900,21 @@ function canResolveShieldCheck(owner = state.pendingShieldCheckReveal?.owner) {
   return Boolean(owner && owner === state.viewer);
 }
 
-function canToggleTapped(zoneKey) {
+function canToggleTapped(zoneKey, card = null) {
+  if (zoneKey === "battle" && card?.seals?.length) return false;
   return zoneKey === "battle" || zoneKey === "mana";
 }
 
 function canShowCard(slot, zoneKey, card = null) {
   if (card?.faceUp) return true;
   if (state.handPeek?.owner === slot && zoneKey === "hand") return true;
+  if (
+    state.handBrowse?.owner === slot &&
+    zoneKey === "hand" &&
+    state.handBrowse.revealedUids?.includes(card?.uid)
+  ) {
+    return true;
+  }
   if (state.zoneBrowse?.owner === slot && state.zoneBrowse.zone === zoneKey) {
     const browseUids = state.zoneBrowse.uids;
     return !Array.isArray(browseUids) || browseUids.includes(card?.uid);
@@ -2767,6 +2929,40 @@ function removeMovedCardsFromZoneBrowse(movedRefs) {
   const movedUids = new Set(movedRefs.map((ref) => ref.uid));
   state.zoneBrowse.uids = state.zoneBrowse.uids.filter((uid) => !movedUids.has(uid));
   if (!state.zoneBrowse.uids.length) state.zoneBrowse = null;
+}
+
+function removeMovedCardsFromHandBrowse(movedRefs) {
+  if (!state.handBrowse || !movedRefs.length) return;
+  const movedUids = new Set(
+    movedRefs
+      .filter((ref) => ref.owner === state.handBrowse.owner && ref.zone !== "hand")
+      .map((ref) => ref.uid),
+  );
+  if (!movedUids.size) return;
+  state.handBrowse.revealedUids = (state.handBrowse.revealedUids || []).filter(
+    (uid) => !movedUids.has(uid),
+  );
+  if (!state.players[state.handBrowse.owner]?.hand.length) state.handBrowse = null;
+}
+
+function releaseSealsToGraveyard(owner, card) {
+  const player = state.players[owner];
+  flattenCards([card]).forEach((targetCard) => {
+    const seals = targetCard.seals || [];
+    seals.forEach((seal) => {
+      prepareCardForGraveyard(seal);
+      player.graveyard.push(seal);
+    });
+    targetCard.seals = [];
+  });
+}
+
+function prepareCardForGraveyard(card) {
+  card.tapped = false;
+  card.faceUp = true;
+  card.shieldCheckRevealed = false;
+  card.stack = card.stack || [];
+  card.seals = card.seals || [];
 }
 
 function faceUpForZone(zoneKey, options = {}) {
@@ -2814,6 +3010,7 @@ function saveUndoSnapshot() {
       deckMenuOwner: state.deckMenuOwner,
       zoneBrowse: state.zoneBrowse,
       handPeek: state.handPeek,
+      handBrowse: state.handBrowse,
       log: state.log,
     }),
   );
@@ -2837,6 +3034,7 @@ function undoLastAction() {
   state.deckMenuOwner = snapshot.deckMenuOwner || null;
   state.zoneBrowse = snapshot.zoneBrowse || null;
   state.handPeek = snapshot.handPeek || null;
+  state.handBrowse = snapshot.handBrowse || null;
   state.log = clonePlain(snapshot.log || []);
   pushLog("操作を取り消しました");
   render();
@@ -2858,6 +3056,7 @@ function clearSelection() {
 function closeTemporaryViews() {
   state.zoneBrowse = null;
   state.handPeek = null;
+  state.handBrowse = null;
 }
 
 function playerOrderLabel(slot) {
@@ -3002,6 +3201,7 @@ function applyRoomPayload(payload) {
   const localPendingDeckAction = clonePlain(state.pendingDeckAction || null);
   const localZoneBrowse = clonePlain(state.zoneBrowse || null);
   const localHandPeek = clonePlain(state.handPeek || null);
+  const localHandBrowse = clonePlain(state.handBrowse || null);
   roomSync.applyingRemote = true;
   state.players = hydrateSyncedPlayers(payload.state.players || {});
   state.viewer = preferredViewerSlot(state.viewer || "self");
@@ -3018,7 +3218,7 @@ function applyRoomPayload(payload) {
   });
   state.handMenuOwner = null;
   state.deckMenuOwner = null;
-  restoreTemporaryViewsAfterRemote(localZoneBrowse, localHandPeek);
+  restoreTemporaryViewsAfterRemote(localZoneBrowse, localHandPeek, localHandBrowse);
   roomSync.lastSyncedHash = hash;
   if (roomSync.pendingLocalHash === hash) roomSync.pendingLocalHash = "";
   render();
@@ -3031,9 +3231,10 @@ function restoreSelectionAfterRemote(selection, pending = {}) {
   state.pendingDeckAction = state.selected.length ? pending.pendingDeckAction || null : null;
 }
 
-function restoreTemporaryViewsAfterRemote(zoneBrowse, handPeek) {
+function restoreTemporaryViewsAfterRemote(zoneBrowse, handPeek, handBrowse) {
   state.zoneBrowse = null;
   state.handPeek = null;
+  state.handBrowse = null;
 
   const browse = normalizeZoneBrowseAfterRemote(zoneBrowse);
   if (browse) {
@@ -3043,7 +3244,11 @@ function restoreTemporaryViewsAfterRemote(zoneBrowse, handPeek) {
 
   if (handPeek?.owner && state.players[handPeek.owner]) {
     state.handPeek = handPeek;
+    return;
   }
+
+  const browseHand = normalizeHandBrowseAfterRemote(handBrowse);
+  if (browseHand) state.handBrowse = browseHand;
 }
 
 function normalizeZoneBrowseAfterRemote(zoneBrowse) {
@@ -3058,6 +3263,17 @@ function normalizeZoneBrowseAfterRemote(zoneBrowse) {
     if (!browse.uids.length) return null;
   }
   return browse;
+}
+
+function normalizeHandBrowseAfterRemote(handBrowse) {
+  if (!handBrowse?.owner || !state.players[handBrowse.owner]) return null;
+  const hand = state.players[handBrowse.owner].hand || [];
+  if (!hand.length) return null;
+  const liveUids = new Set(hand.map((card) => card.uid));
+  return {
+    owner: handBrowse.owner,
+    revealedUids: (handBrowse.revealedUids || []).filter((uid) => liveUids.has(uid)),
+  };
 }
 
 function buildRoomPayload() {
@@ -3128,6 +3344,7 @@ function sanitizeCardForRoom(card) {
     tapped: Boolean(card.tapped),
     faceUp: Boolean(card.faceUp),
     stack: sanitizeCardsForRoom(card.stack || []),
+    seals: sanitizeCardsForRoom(card.seals || []),
   };
   if (card.shieldNumber) clean.shieldNumber = card.shieldNumber;
   if (card.shieldCheckRevealed) clean.shieldCheckRevealed = true;
@@ -3167,6 +3384,7 @@ function hydrateSyncedCard(slot, card) {
     shieldNumber: card.shieldNumber || undefined,
     shieldCheckRevealed: Boolean(card.shieldCheckRevealed),
     stack: hydrateSyncedCards(slot, card.stack || []),
+    seals: hydrateSyncedCards(slot, card.seals || []),
   };
 }
 
@@ -3200,6 +3418,7 @@ function hydrateCardImages(slot, cards) {
   cards.forEach((card) => {
     card.imageUrl = resolveLocalCardImageUrl(slot, card) || card.imageUrl || "";
     if (card.stack?.length) hydrateCardImages(slot, card.stack);
+    if (card.seals?.length) hydrateCardImages(slot, card.seals);
   });
 }
 
