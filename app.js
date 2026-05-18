@@ -72,7 +72,8 @@ const roomSync = {
   db: null,
   user: null,
   roomId: "",
-  localSlot: "self",
+  localSlot: "",
+  seats: {},
   roomRef: null,
   presenceRef: null,
   connected: false,
@@ -119,7 +120,10 @@ function bindElements() {
   els.handPanel = document.querySelector("#handPanel");
   els.drawButton = document.querySelector("#drawButton");
   els.roomIdInput = document.querySelector("#roomIdInput");
-  els.seatSelect = document.querySelector("#seatSelect");
+  els.seatStatus = document.querySelector("#seatStatus");
+  els.randomSeatButton = document.querySelector("#randomSeatButton");
+  els.claimFirstButton = document.querySelector("#claimFirstButton");
+  els.claimSecondButton = document.querySelector("#claimSecondButton");
   els.joinRoomButton = document.querySelector("#joinRoomButton");
   els.leaveRoomButton = document.querySelector("#leaveRoomButton");
   els.syncStatus = document.querySelector("#syncStatus");
@@ -152,7 +156,7 @@ function bindEvents() {
 
   els.viewerSelect.addEventListener("change", (event) => {
     if (roomSync.connected) {
-      state.viewer = roomSync.localSlot;
+      state.viewer = assignedLocalSlot() || "self";
       render();
       return;
     }
@@ -181,6 +185,9 @@ function bindEvents() {
   els.drawButton.addEventListener("click", () => drawCards(state.viewer, 1));
   els.joinRoomButton.addEventListener("click", connectRoom);
   els.leaveRoomButton.addEventListener("click", disconnectRoom);
+  els.randomSeatButton.addEventListener("click", () => runRoomAction(randomizeSeats));
+  els.claimFirstButton.addEventListener("click", () => runRoomAction(() => claimSeat("self")));
+  els.claimSecondButton.addEventListener("click", () => runRoomAction(() => claimSeat("opponent")));
   document.addEventListener("click", handleDocumentClick);
   window.addEventListener("pointermove", handlePointerMove);
   window.addEventListener("pointerup", handlePointerUp);
@@ -259,7 +266,6 @@ async function connectRoom() {
     return;
   }
 
-  roomSync.localSlot = els.seatSelect.value === "opponent" ? "opponent" : "self";
   roomSync.connecting = true;
   roomSync.status = "接続中...";
   roomSync.statusType = "";
@@ -274,15 +280,15 @@ async function connectRoom() {
     if (roomSync.connected) disconnectRoom({ silent: true });
 
     roomSync.roomId = roomId;
+    roomSync.localSlot = "";
+    roomSync.seats = {};
     roomSync.roomRef = roomSync.db.ref(`rooms/${roomId}`);
     roomSync.presenceRef = roomSync.roomRef.child(`presence/${roomSync.user.uid}`);
     roomSync.connected = true;
-    state.viewer = roomSync.localSlot;
     clearSelection();
     closeTemporaryViews();
 
     await roomSync.presenceRef.set({
-      slot: roomSync.localSlot,
       clientId: roomSync.clientId,
       joinedAt: window.firebase.database.ServerValue.TIMESTAMP,
     });
@@ -297,7 +303,7 @@ async function connectRoom() {
     }
 
     roomSync.roomRef.on("value", handleRoomSnapshot);
-    roomSync.status = `接続中: ${roomId} / ${playerOrderLabel(roomSync.localSlot)}側`;
+    roomSync.status = `接続中: ${roomId} / ${seatStatusText()}`;
     roomSync.statusType = "connected";
   } catch (error) {
     disconnectRoom({ silent: true });
@@ -323,6 +329,8 @@ function disconnectRoom(options = {}) {
   roomSync.roomRef = null;
   roomSync.connected = false;
   roomSync.connecting = false;
+  roomSync.localSlot = "";
+  roomSync.seats = {};
   roomSync.lastSyncedHash = "";
   roomSync.pendingLocalHash = "";
   if (!options.silent) {
@@ -346,20 +354,156 @@ function generateRoomId() {
 
 function renderRoomControls() {
   if (!els.syncStatus) return;
-  if (roomSync.connected) {
+  if (assignedLocalSlot()) {
     els.viewerSelect.value = roomSync.localSlot;
   }
   els.roomIdInput.value = roomSync.roomId || els.roomIdInput.value;
-  if (roomSync.connected || roomSync.connecting) {
-    els.seatSelect.value = roomSync.localSlot;
-  }
   els.roomIdInput.disabled = roomSync.connected || roomSync.connecting;
-  els.seatSelect.disabled = roomSync.connected || roomSync.connecting;
   els.viewerSelect.disabled = roomSync.connected;
   els.joinRoomButton.disabled = roomSync.connected || roomSync.connecting;
   els.leaveRoomButton.disabled = !roomSync.connected && !roomSync.connecting;
+  els.randomSeatButton.disabled = !roomSync.connected || roomSync.connecting;
+  els.claimFirstButton.disabled = !roomSync.connected || roomSync.connecting;
+  els.claimSecondButton.disabled = !roomSync.connected || roomSync.connecting;
+  const needsSeat = roomSync.connected && !assignedLocalSlot();
+  els.setupButton.disabled = needsSeat;
+  els.drawButton.disabled = needsSeat;
+  els.untapButton.disabled = needsSeat;
+  els.extraTurnButton.disabled = needsSeat;
+  els.endTurnButton.disabled = needsSeat;
+  els.seatStatus.textContent = seatStatusText();
   els.syncStatus.textContent = roomSync.status || "未接続";
   els.syncStatus.className = `sync-status ${roomSync.statusType || ""}`.trim();
+}
+
+async function runRoomAction(action) {
+  try {
+    await action();
+  } catch (error) {
+    roomSync.status = firebaseErrorMessage(error, "ルーム操作エラー");
+    roomSync.statusType = "error";
+    renderRoomControls();
+  }
+}
+
+async function claimSeat(slot) {
+  if (!roomSync.connected || !roomSync.roomRef) return;
+  const activeClientIds = await readActiveClientIds();
+  const result = await updateRoomSeats((seats) => {
+    const currentOwner = seats[slot];
+    if (currentOwner && currentOwner !== roomSync.clientId && activeClientIds.has(currentOwner)) {
+      return null;
+    }
+    const next = removeClientFromSeats(seats, roomSync.clientId);
+    next[slot] = roomSync.clientId;
+    return next;
+  });
+
+  if (!result.committed) {
+    roomSync.status = `${playerOrderLabel(slot)}は使用中です`;
+    roomSync.statusType = "error";
+    renderRoomControls();
+    return;
+  }
+  await updatePresenceSlot(slot);
+  applySeats(result.snapshot.val() || {});
+  roomSync.status = `接続中: ${roomSync.roomId} / ${seatStatusText()}`;
+  roomSync.statusType = "connected";
+  render();
+}
+
+async function randomizeSeats() {
+  if (!roomSync.connected || !roomSync.roomRef) return;
+  const activeClientIds = await readActiveClientIds();
+  const otherClientId = [...activeClientIds].find((clientId) => clientId !== roomSync.clientId);
+  const localSlot = Math.random() < 0.5 ? "self" : "opponent";
+  const remoteSlot = opponentOf(localSlot);
+
+  const result = await updateRoomSeats((seats) => {
+    const next = removeClientFromSeats(seats, roomSync.clientId);
+    if (otherClientId) removeClientFromSeats(next, otherClientId);
+    if (seatOccupiedByAnotherActiveClient(next[localSlot], activeClientIds, roomSync.clientId)) {
+      return null;
+    }
+    if (
+      otherClientId &&
+      seatOccupiedByAnotherActiveClient(next[remoteSlot], activeClientIds, otherClientId)
+    ) {
+      return null;
+    }
+    next[localSlot] = roomSync.clientId;
+    if (otherClientId) next[remoteSlot] = otherClientId;
+    return next;
+  });
+
+  if (!result.committed) {
+    roomSync.status = "ランダム決定に失敗しました。席を確認してください";
+    roomSync.statusType = "error";
+    renderRoomControls();
+    return;
+  }
+  await updatePresenceSlot(localSlot);
+  applySeats(result.snapshot.val() || {});
+  roomSync.status = `接続中: ${roomSync.roomId} / ${seatStatusText()}`;
+  roomSync.statusType = "connected";
+  render();
+}
+
+async function updateRoomSeats(updater) {
+  const seatsRef = roomSync.roomRef.child("seats");
+  const currentSnapshot = await seatsRef.once("value");
+  const next = updater(normalizeSeats(currentSnapshot.val()));
+  if (!next) return { committed: false, snapshot: currentSnapshot };
+  await seatsRef.set(next);
+  const nextSnapshot = await seatsRef.once("value");
+  return { committed: true, snapshot: nextSnapshot };
+}
+
+async function readActiveClientIds() {
+  const snapshot = await roomSync.roomRef.child("presence").once("value");
+  return new Set(
+    Object.values(snapshot.val() || {})
+      .map((entry) => entry?.clientId)
+      .filter(Boolean),
+  );
+}
+
+async function updatePresenceSlot(slot) {
+  if (!roomSync.presenceRef) return;
+  await roomSync.presenceRef.update({ slot });
+}
+
+function applySeats(rawSeats = {}) {
+  roomSync.seats = normalizeSeats(rawSeats);
+  roomSync.localSlot = slotForClient(roomSync.seats, roomSync.clientId);
+  if (roomSync.connected) {
+    roomSync.status = `接続中: ${roomSync.roomId} / ${seatStatusText()}`;
+    roomSync.statusType = "connected";
+  }
+}
+
+function normalizeSeats(rawSeats = {}) {
+  rawSeats = rawSeats || {};
+  const seats = {};
+  if (rawSeats.self) seats.self = String(rawSeats.self);
+  if (rawSeats.opponent) seats.opponent = String(rawSeats.opponent);
+  return seats;
+}
+
+function slotForClient(seats, clientId) {
+  if (seats.self === clientId) return "self";
+  if (seats.opponent === clientId) return "opponent";
+  return "";
+}
+
+function removeClientFromSeats(seats, clientId) {
+  if (seats.self === clientId) delete seats.self;
+  if (seats.opponent === clientId) delete seats.opponent;
+  return seats;
+}
+
+function seatOccupiedByAnotherActiveClient(occupant, activeClientIds, allowedClientId) {
+  return occupant && occupant !== allowedClientId && activeClientIds.has(occupant);
 }
 
 function emptyPlayerState() {
@@ -1457,20 +1601,40 @@ function renderPlayerInfo(slot, target) {
 
 function renderPendingButtons() {
   els.pendingButtons.innerHTML = "";
-  Object.keys(PLAYERS).forEach((slot) => {
-    const count = state.players[slot].pending.length;
-    if (!count) return;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "pending-button";
-    button.textContent = `${playerLabel(slot)} 保留あり ${count}`;
-    button.addEventListener("click", (event) => {
+  const groups = Object.keys(PLAYERS).filter((slot) => state.players[slot].pending.length);
+  els.pendingButtons.parentElement.dataset.emptyPending = groups.length ? "false" : "true";
+
+  if (!groups.length) {
+    const empty = document.createElement("span");
+    empty.className = "pending-empty";
+    empty.textContent = "保留なし";
+    els.pendingButtons.appendChild(empty);
+    return;
+  }
+
+  groups.forEach((slot) => {
+    const cards = state.players[slot].pending;
+    const group = document.createElement("article");
+    group.className = "pending-group";
+
+    const label = document.createElement("button");
+    label.type = "button";
+    label.className = "pending-label";
+    label.textContent = `${playerLabel(slot)} 保留 ${cards.length}`;
+    label.addEventListener("click", (event) => {
       event.stopPropagation();
       openZoneBrowse(slot, "pending");
     });
-    els.pendingButtons.appendChild(button);
+    group.appendChild(label);
+
+    const row = document.createElement("div");
+    row.className = "pending-card-row";
+    cards.forEach((card) => {
+      row.appendChild(renderCard(slot, "pending", card, true, "非公開", "compact"));
+    });
+    group.appendChild(row);
+    els.pendingButtons.appendChild(group);
   });
-  els.pendingButtons.hidden = !els.pendingButtons.children.length;
 }
 
 function renderHandPanel() {
@@ -2498,8 +2662,9 @@ function playerOrderLabel(slot) {
 }
 
 function playerLabel(slot) {
-  if (!roomSync.connected) return PLAYERS[slot].label;
-  return slot === roomSync.localSlot ? "自分" : "相手";
+  const localSlot = assignedLocalSlot();
+  if (!localSlot) return PLAYERS[slot].label;
+  return slot === localSlot ? "自分" : "相手";
 }
 
 function actionPlayerLabel(slot) {
@@ -2518,16 +2683,28 @@ function formatLogEntry(entry) {
 }
 
 function preferredViewerSlot(fallback = "self") {
-  return roomSync.connected ? roomSync.localSlot : fallback;
+  return assignedLocalSlot() || fallback;
 }
 
 function enforceLocalPerspective() {
-  if (roomSync.connected) state.viewer = roomSync.localSlot;
+  const localSlot = assignedLocalSlot();
+  if (localSlot) state.viewer = localSlot;
 }
 
 function displayBottomSlot() {
   enforceLocalPerspective();
-  return roomSync.connected ? roomSync.localSlot : "self";
+  return assignedLocalSlot() || "self";
+}
+
+function assignedLocalSlot() {
+  return ["self", "opponent"].includes(roomSync.localSlot) ? roomSync.localSlot : "";
+}
+
+function seatStatusText() {
+  if (!roomSync.connected && !roomSync.connecting) return "未接続";
+  const slot = assignedLocalSlot();
+  if (!slot) return "未決定";
+  return `自分が${playerOrderLabel(slot)}`;
 }
 
 function opponentOf(slot) {
@@ -2593,15 +2770,29 @@ async function writeRoomState(options = {}) {
 
 function handleRoomSnapshot(snapshot) {
   const payload = snapshot.val();
-  if (!payload?.state) return;
+  if (!payload?.state) {
+    const previousSlot = assignedLocalSlot();
+    applySeats(payload?.seats || {});
+    if (previousSlot !== assignedLocalSlot()) render();
+    return;
+  }
   applyRoomPayload(payload);
 }
 
 function applyRoomPayload(payload) {
+  const previousSlot = assignedLocalSlot();
+  applySeats(payload.seats || {});
+  const seatChanged = previousSlot !== assignedLocalSlot();
   const logData = normalizeRoomLog(payload.log);
   const hash = roomHash(payload.state, logData);
-  if (hash === roomSync.lastSyncedHash) return;
-  if (roomSync.pendingLocalHash && hash !== roomSync.pendingLocalHash) return;
+  if (hash === roomSync.lastSyncedHash) {
+    if (seatChanged) render();
+    return;
+  }
+  if (roomSync.pendingLocalHash && hash !== roomSync.pendingLocalHash) {
+    if (seatChanged) render();
+    return;
+  }
 
   const localSelection = clonePlain(state.selected || []);
   const localPendingShieldAction = clonePlain(state.pendingShieldAction || null);

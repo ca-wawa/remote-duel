@@ -21,7 +21,7 @@
       src="https://www.gstatic.com/firebasejs/12.7.0/firebase-database-compat.js"
       defer
     ></script>
-    <script src="./app.js?v=20260518-local-log-pending" defer></script>
+    <script src="./app.js?v=20260518-seating-pending-row" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -54,7 +54,7 @@
         <section class="play-area" aria-label="対戦盤面">
           <div class="playmat">
             <div class="player-side opponent-side" id="lane-opponent"></div>
-            <div class="middle-line">
+            <div class="middle-line" data-empty-pending="true">
               <div class="pending-buttons" id="pendingButtons"></div>
               <span id="statusText">デッキZIPを読み込むか、サンプルを使って開始できます。</span>
             </div>
@@ -75,11 +75,19 @@
               <input id="roomIdInput" type="text" autocomplete="off" placeholder="room-1234" />
             </div>
             <div class="field-row">
-              <label for="seatSelect">担当</label>
-              <select id="seatSelect">
-                <option value="self">先攻側</option>
-                <option value="opponent">後攻側</option>
-              </select>
+              <span>担当</span>
+              <strong class="seat-status" id="seatStatus">未接続</strong>
+            </div>
+            <div class="control-grid seat-actions">
+              <button class="primary-button" id="randomSeatButton" type="button" disabled>
+                ランダム
+              </button>
+              <button class="subtle-button" id="claimFirstButton" type="button" disabled>
+                自分が先攻
+              </button>
+              <button class="subtle-button" id="claimSecondButton" type="button" disabled>
+                自分が後攻
+              </button>
             </div>
             <div class="control-grid">
               <button class="primary-button" id="joinRoomButton" type="button">接続</button>
