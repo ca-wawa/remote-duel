@@ -290,7 +290,7 @@ button:disabled {
 }
 
 .zone-strip {
-  padding: 24px 8px 8px;
+  padding: 8px;
   overflow: visible;
 }
 
@@ -315,9 +315,9 @@ button:disabled {
 }
 
 .zone-cards {
-  height: 100%;
+  min-height: 82px;
   min-width: 0;
-  padding: 8px 4px 8px;
+  padding: 4px;
   display: flex;
   align-items: flex-start;
   gap: 9px;
@@ -809,14 +809,14 @@ button:disabled {
 }
 
 .player-readout-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 8px;
 }
 
 .top-readout .player-readout-header {
-  padding-right: 92px;
+  padding-right: 76px;
 }
 
 .bottom-readout {
@@ -827,10 +827,12 @@ button:disabled {
   margin: 0;
   font-size: 1rem;
   font-weight: 950;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .connection-readout-status {
-  max-width: 130px;
+  max-width: 92px;
   padding: 5px 9px;
   overflow: hidden;
   border: 1px solid rgba(31, 111, 69, 0.24);
@@ -841,6 +843,13 @@ button:disabled {
   font-weight: 950;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.connection-readout-detail {
+  margin: 5px 0 0;
+  color: #38536a;
+  font-size: 0.72rem;
+  font-weight: 900;
 }
 
 .connection-readout-status.error {

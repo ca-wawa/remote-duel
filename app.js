@@ -5,6 +5,10 @@ const DB_VERSION = 1;
 const DECK_STORE = "decks";
 const MAX_UNDO_HISTORY = 30;
 const ROOM_WRITE_DEBOUNCE_MS = 350;
+const TAB_INSTANCE_ID =
+  typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
 
 const firebaseConfig = {
   apiKey: "AIzaSyCkiAVvIi7GS-Sy5ukISXTv1IDE913L15k",
@@ -219,13 +223,11 @@ function closeMenu() {
 function getClientId() {
   const key = "remote-duel-client-id";
   try {
-    const existing = localStorage.getItem(key);
-    if (existing) return existing;
-    const next = crypto.randomUUID();
-    localStorage.setItem(key, next);
-    return next;
+    const existing = sessionStorage.getItem(key) || crypto.randomUUID();
+    sessionStorage.setItem(key, existing);
+    return `${existing}:${TAB_INSTANCE_ID}`;
   } catch {
-    return crypto.randomUUID();
+    return TAB_INSTANCE_ID;
   }
 }
 
@@ -402,7 +404,7 @@ function renderRoomControls() {
 
 function headerConnectionStatus() {
   if (roomSync.connected) {
-    return assignedLocalSlot() ? `接続中 / ${seatStatusText()}` : "接続中 / 担当未決定";
+    return assignedLocalSlot() ? "接続中" : "接続中 / 担当未決定";
   }
   if (roomSync.connecting) return "接続中...";
   if (roomSync.statusType === "error") return "接続エラー";
@@ -1675,6 +1677,13 @@ function renderPlayerInfo(slot, target) {
   }
 
   target.appendChild(header);
+
+  if (target === els.opponentInfo && roomSync.connected && assignedLocalSlot()) {
+    const statusDetail = document.createElement("p");
+    statusDetail.className = "connection-readout-detail";
+    statusDetail.textContent = seatStatusText();
+    target.appendChild(statusDetail);
+  }
 }
 
 function renderReadoutConnectionStatus() {
