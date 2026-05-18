@@ -21,29 +21,20 @@
       src="https://www.gstatic.com/firebasejs/12.7.0/firebase-database-compat.js"
       defer
     ></script>
-    <script src="./app.js?v=20260518-layout-menu" defer></script>
+    <script src="./app.js?v=20260518-floating-menu-zones" defer></script>
   </head>
   <body>
     <div class="app-shell">
-      <header class="topbar">
-        <button
-          class="menu-button"
-          id="menuButton"
-          type="button"
-          aria-label="メニューを開く"
-          aria-controls="appMenu"
-          aria-expanded="false"
-        >
-          <span></span>
-          <span></span>
-          <span></span>
-        </button>
-        <div class="header-title">
-          <p class="eyebrow">Remote Duel</p>
-          <h1>対戦マット</h1>
-        </div>
-        <strong class="header-sync-status" id="headerSyncStatus">Firebase初期化中</strong>
-      </header>
+      <button
+        class="menu-button"
+        id="menuButton"
+        type="button"
+        aria-label="メニューを開く"
+        aria-controls="appMenu"
+        aria-expanded="false"
+      >
+        menu
+      </button>
 
       <div class="menu-backdrop" id="menuBackdrop" hidden></div>
       <aside class="app-menu" id="appMenu" aria-label="メニュー" hidden>

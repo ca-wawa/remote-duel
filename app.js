@@ -102,7 +102,6 @@ function bindElements() {
   els.menuCloseButton = document.querySelector("#menuCloseButton");
   els.menuBackdrop = document.querySelector("#menuBackdrop");
   els.appMenu = document.querySelector("#appMenu");
-  els.headerSyncStatus = document.querySelector("#headerSyncStatus");
   els.resetButton = document.querySelector("#resetButton");
   els.setupButton = document.querySelector("#setupButton");
   els.untapButton = document.querySelector("#untapButton");
@@ -373,7 +372,7 @@ function generateRoomId() {
 }
 
 function renderRoomControls() {
-  if (!els.syncStatus || !els.headerSyncStatus) return;
+  if (!els.syncStatus) return;
   if (assignedLocalSlot()) {
     els.viewerSelect.value = roomSync.localSlot;
   }
@@ -394,8 +393,7 @@ function renderRoomControls() {
   els.seatStatus.textContent = seatStatusText();
   els.syncStatus.textContent = roomSync.status || "未接続";
   els.syncStatus.className = `sync-status ${roomSync.statusType || ""}`.trim();
-  els.headerSyncStatus.textContent = headerConnectionStatus();
-  els.headerSyncStatus.className = `header-sync-status ${headerConnectionType()}`.trim();
+  renderReadoutConnectionStatus();
 }
 
 function headerConnectionStatus() {
@@ -1646,10 +1644,29 @@ function renderCard(
 function renderPlayerInfo(slot, target) {
   target.innerHTML = "";
 
+  const header = document.createElement("div");
+  header.className = "player-readout-header";
+
   const title = document.createElement("h2");
   const order = playerOrderLabel(slot);
   title.textContent = `${playerLabel(slot)}（${order}${state.turn === slot ? "・行動中" : ""}）`;
-  target.appendChild(title);
+  header.appendChild(title);
+
+  if (target === els.opponentInfo) {
+    const status = document.createElement("span");
+    status.className = `connection-readout-status ${headerConnectionType()}`.trim();
+    status.textContent = headerConnectionStatus();
+    header.appendChild(status);
+  }
+
+  target.appendChild(header);
+}
+
+function renderReadoutConnectionStatus() {
+  const status = els.opponentInfo?.querySelector(".connection-readout-status");
+  if (!status) return;
+  status.textContent = headerConnectionStatus();
+  status.className = `connection-readout-status ${headerConnectionType()}`.trim();
 }
 
 function renderPendingButtons() {
@@ -2102,7 +2119,9 @@ function renderStatus() {
   const latestAction = latestLogMessage();
   els.statusText.textContent =
     ready > 0
-      ? `${ready}/2 デッキ読込済み。${latestAction ? `最新: ${latestAction}` : `現在は${turnLabel}のターンです。`}`
+      ? latestAction
+        ? `最新: ${latestAction}`
+        : `${turnLabel}のターンです。`
       : "デッキZIPを読み込んで開始できます。";
   els.undoButton.disabled = !state.undoStack.length;
 }
