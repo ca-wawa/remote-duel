@@ -47,6 +47,10 @@ const state = {
     self: emptyPlayerState(),
     opponent: emptyPlayerState(),
   },
+  roomDecks: {
+    self: null,
+    opponent: null,
+  },
   viewer: "self",
   firstPlayer: "self",
   turn: "self",
@@ -628,6 +632,7 @@ async function importZipDeck(slot, file) {
   }
 
   state.decks[slot] = deck;
+  state.roomDecks[deckInputTargetSlot(slot)] = sanitizeDeckDefinition(deck);
   await saveDeck(slot, deck);
   hydratePlayerImages(deckInputTargetSlot(slot));
 }
@@ -731,24 +736,21 @@ function setupGame() {
   }
 
   const remoteMode = roomSync.connected && localSlot;
-  const targetSlots = remoteMode ? [localSlot] : Object.keys(PLAYERS);
-  const loadedSlots = remoteMode
-    ? state.decks.self
-      ? [localSlot]
-      : []
-    : targetSlots.filter((slot) => state.decks[slot]);
-  if (loadedSlots.length === 0) {
-    alert("先にデッキZIPを読み込んでください。");
+  syncLocalDeckToRoomDeck();
+  const targetSlots = Object.keys(PLAYERS);
+  const missingSlots = targetSlots.filter((slot) => !deckForPlayerSlot(slot));
+  if (missingSlots.length) {
+    alert(
+      remoteMode
+        ? `${missingSlots.map(playerLabel).join("・")}のデッキ読込待ちです。`
+        : "先にデッキZIPを読み込んでください。",
+    );
     return;
   }
 
   saveUndoSnapshot();
   targetSlots.forEach((slot) => {
-    const deck = remoteMode ? state.decks.self : state.decks[slot];
-    if (!deck) {
-      if (!remoteMode) state.players[slot] = emptyPlayerState();
-      return;
-    }
+    const deck = deckForPlayerSlot(slot);
     setupPlayerFromDeck(slot, deck);
   });
 
@@ -765,7 +767,7 @@ function setupGame() {
   closeTemporaryViews();
   pushLog(
     remoteMode
-      ? `${actionPlayerLabel(localSlot)}の初期手札5枚、シールド5枚で開始`
+      ? "初期手札5枚、シールド5枚で開始"
       : "初期手札5枚、シールド5枚で開始",
   );
   render();
@@ -778,6 +780,19 @@ function setupPlayerFromDeck(slot, deck = state.decks[slot]) {
   player.shields.forEach((card) => assignShieldNumber(player, card));
   player.hand = player.deck.splice(0, 5);
   state.players[slot] = player;
+}
+
+function deckForPlayerSlot(playerSlot) {
+  const localSlot = assignedLocalSlot();
+  if (!roomSync.connected || !localSlot) return state.decks[playerSlot];
+  if (playerSlot === localSlot) return state.decks.self || state.roomDecks[playerSlot];
+  return state.roomDecks[playerSlot] || state.decks.opponent;
+}
+
+function syncLocalDeckToRoomDeck() {
+  const localSlot = assignedLocalSlot();
+  if (!localSlot || !state.decks.self) return;
+  state.roomDecks[localSlot] = sanitizeDeckDefinition(state.decks.self);
 }
 
 function drawCard(slot) {
@@ -856,6 +871,28 @@ function millCards(slot, count) {
   }
   clearSelection();
   pushLog(`${actionPlayerLabel(slot)}が山札上${moved}枚を墓地へ`);
+  render();
+}
+
+function manaFromDeckCards(slot, count) {
+  const player = state.players[slot];
+  if (!player.deck.length) {
+    pushLog(`${actionPlayerLabel(slot)}の山札がありません`);
+    render();
+    return;
+  }
+  saveUndoSnapshot();
+  let moved = 0;
+  for (let i = 0; i < count; i += 1) {
+    const card = player.deck.shift();
+    if (!card) break;
+    card.tapped = false;
+    card.faceUp = true;
+    player.mana.push(card);
+    moved += 1;
+  }
+  clearSelection();
+  pushLog(`${actionPlayerLabel(slot)}が山札上${moved}枚をマナへ`);
   render();
 }
 
@@ -1789,8 +1826,7 @@ function renderPlayerInfo(slot, target) {
 
   const title = document.createElement("h2");
   const order = playerOrderLabel(slot);
-  const seat = roomSync.connected ? `${playerSeatLabel(slot)} / ` : "";
-  title.textContent = `${playerLabel(slot)}（${seat}${order}${state.turn === slot ? "・行動中" : ""}）`;
+  title.textContent = `${playerLabel(slot)}（${order}${state.turn === slot ? "・行動中" : ""}）`;
   header.appendChild(title);
 
   if (target === els.opponentInfo) {
@@ -2409,6 +2445,7 @@ function zoneActionClass(actionKey) {
       "add-seal": "zone-action-battle",
       "remove-seal": "zone-action-graveyard",
       "hand-browse-reveal": "zone-action-hand",
+      "deck-mana": "zone-action-mana",
     }[actionKey] || ""
   );
 }
@@ -2758,6 +2795,7 @@ function runDeckMenuAction(actionKey, owner = state.deckMenuOwner || state.viewe
   const count = deckActionCount(owner);
   if (actionKey === "deck-draw") drawCards(owner, count);
   if (actionKey === "deck-shield") shieldFromDeckCards(owner, count);
+  if (actionKey === "deck-mana") manaFromDeckCards(owner, count);
   if (actionKey === "deck-mill") millCards(owner, count);
   if (actionKey === "deck-look") openZoneBrowse(owner, "deck", { count });
   if (actionKey === "deck-reveal") revealDeckCards(owner, count);
@@ -2896,6 +2934,7 @@ function getSelectionActions(zoneKey) {
     deck: [
       ["deck-draw", "ドロー"],
       ["deck-shield", "シールドへ"],
+      ["deck-mana", "マナへ"],
       ["deck-mill", "墓地へ"],
       ["deck-look", "山札を見る"],
       ["deck-reveal", "表向きにする"],
@@ -3039,6 +3078,7 @@ function saveUndoSnapshot() {
   state.undoStack.push(
     clonePlain({
       players: state.players,
+      roomDecks: state.roomDecks,
       viewer: state.viewer,
       firstPlayer: state.firstPlayer,
       turn: state.turn,
@@ -3064,6 +3104,7 @@ function undoLastAction() {
   if (!snapshot) return;
 
   state.players = clonePlain(snapshot.players);
+  state.roomDecks = clonePlain(snapshot.roomDecks || state.roomDecks);
   state.viewer = snapshot.viewer || "self";
   state.firstPlayer = snapshot.firstPlayer || "self";
   state.turn = snapshot.turn;
@@ -3104,10 +3145,6 @@ function closeTemporaryViews() {
 
 function playerOrderLabel(slot) {
   return slot === state.firstPlayer ? "先攻" : "後攻";
-}
-
-function playerSeatLabel(slot) {
-  return slot === "self" ? "A" : "B";
 }
 
 function startingTurnCount(firstSlot = state.firstPlayer) {
@@ -3184,7 +3221,7 @@ function seatStatusText() {
   if (!roomSync.connected && !roomSync.connecting) return "未接続";
   const slot = assignedLocalSlot();
   if (!slot) return "未決定";
-  return `自分は${playerSeatLabel(slot)} / ${playerOrderLabel(slot)}`;
+  return `自分は${playerOrderLabel(slot)}`;
 }
 
 function opponentOf(slot) {
@@ -3281,6 +3318,7 @@ function applyRoomPayload(payload) {
   const localHandPeek = clonePlain(state.handPeek || null);
   const localHandBrowse = clonePlain(state.handBrowse || null);
   roomSync.applyingRemote = true;
+  state.roomDecks = normalizeRoomDecks(payload.state.roomDecks || state.roomDecks);
   state.players = hydrateSyncedPlayers(payload.state.players || {});
   state.viewer = preferredViewerSlot(state.viewer || "self");
   state.firstPlayer = normalizePlayerSlot(payload.state.firstPlayer, "self");
@@ -3358,6 +3396,7 @@ function normalizeHandBrowseAfterRemote(handBrowse) {
 function buildRoomPayload() {
   const stateData = {
     players: sanitizePlayersForRoom(),
+    roomDecks: sanitizeRoomDecks(),
     firstPlayer: normalizePlayerSlot(state.firstPlayer, "self"),
     turn: normalizePlayerSlot(state.turn, state.firstPlayer),
     turnCount: clonePlain(state.turnCount),
@@ -3393,6 +3432,35 @@ function sanitizePlayersForRoom() {
       nextShieldNumber: player.nextShieldNumber || 1,
     };
     return players;
+  }, {});
+}
+
+function sanitizeRoomDecks() {
+  syncLocalDeckToRoomDeck();
+  return Object.keys(PLAYERS).reduce((decks, slot) => {
+    decks[slot] = sanitizeDeckDefinition(state.roomDecks[slot]);
+    return decks;
+  }, {});
+}
+
+function sanitizeDeckDefinition(deck) {
+  if (!deck) return null;
+  return {
+    id: deck.id || "",
+    name: deck.name || "Untitled deck",
+    cards: (deck.cards || []).map((card) => ({
+      id: card.id || cardIdFromImage(card.image || "") || card.name || "",
+      name: card.name || card.id || "カード",
+      count: Math.max(1, Math.floor(Number(card.count || 1))),
+      image: card.image || "",
+    })),
+  };
+}
+
+function normalizeRoomDecks(decks = {}) {
+  return Object.keys(PLAYERS).reduce((result, slot) => {
+    result[slot] = decks[slot] ? sanitizeDeckDefinition(decks[slot]) : state.roomDecks[slot] || null;
+    return result;
   }, {});
 }
 
