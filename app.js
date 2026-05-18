@@ -65,6 +65,10 @@ const state = {
   log: [],
 };
 
+const uiState = {
+  stackPreviewIndexes: {},
+};
+
 const els = {};
 const roomSync = {
   app: null,
@@ -1295,26 +1299,37 @@ function renderRevealArea() {
             browseCount === deckCountAtOpen ? "全部" : `上${browseCount}枚`
           }`
         : `${playerLabel(owner)} ${zoneLabel(zone)}`);
-    visibleGroups.push({
-      slot: owner,
-      zone,
-      cards,
-      label,
-      forceVisible: true,
-      isTemporary: true,
-    });
+    if (cards.length) {
+      visibleGroups.push({
+        slot: owner,
+        zone,
+        cards,
+        label,
+        forceVisible: true,
+        isTemporary: true,
+      });
+    } else {
+      state.zoneBrowse = null;
+      clearSelection();
+    }
   }
 
   if (state.handPeek) {
     const { owner } = state.handPeek;
-    visibleGroups.push({
-      slot: owner,
-      zone: "hand",
-      cards: state.players[owner]?.hand || [],
-      label: `${playerLabel(owner)} 手札確認`,
-      forceVisible: true,
-      isTemporary: true,
-    });
+    const cards = state.players[owner]?.hand || [];
+    if (cards.length) {
+      visibleGroups.push({
+        slot: owner,
+        zone: "hand",
+        cards,
+        label: `${playerLabel(owner)} 手札確認`,
+        forceVisible: true,
+        isTemporary: true,
+      });
+    } else {
+      state.handPeek = null;
+      clearSelection();
+    }
   }
 
   if (!visibleGroups.length) {
@@ -1733,22 +1748,25 @@ function renderSelectedPreview() {
     refs.length > 1 ? "is-multiple" : "is-single"
   }`;
   refs.forEach(({ ref, card }, index) => {
-    const visible = canShowCard(ref.owner, ref.zone, card);
+    const stackCards = stackGroupCards(card);
+    const previewIndex = stackPreviewIndex(ref, stackCards);
+    const previewCard = stackCards[previewIndex] || card;
+    const visible = canShowCard(ref.owner, ref.zone, previewCard);
     const item = document.createElement("article");
     item.className = "selected-preview-card";
     item.addEventListener("click", (event) => event.stopPropagation());
 
     const media = document.createElement("div");
     media.className = "selected-preview-media";
-    if (visible && card.imageUrl) {
+    if (visible && previewCard.imageUrl) {
       const image = document.createElement("img");
-      image.src = card.imageUrl;
-      image.alt = card.name;
+      image.src = previewCard.imageUrl;
+      image.alt = previewCard.name;
       media.appendChild(image);
     } else {
       const fallback = document.createElement("div");
       fallback.className = visible ? "selected-preview-fallback" : "selected-preview-back";
-      fallback.textContent = visible ? card.name : "非公開カード";
+      fallback.textContent = visible ? previewCard.name : "非公開カード";
       media.appendChild(fallback);
     }
 
@@ -1759,17 +1777,68 @@ function renderSelectedPreview() {
       media.appendChild(order);
     }
 
-    const name = document.createElement("h3");
-    name.textContent = visible ? card.name : "非公開カード";
-
     const meta = document.createElement("p");
     meta.textContent = `${playerLabel(ref.owner)} / ${zoneLabel(ref.zone)}`;
 
     item.appendChild(media);
-    item.appendChild(name);
+    if (stackCards.length > 1) {
+      item.appendChild(renderPreviewStackList(ref, stackCards, previewIndex));
+    } else {
+      const name = document.createElement("h3");
+      name.textContent = visible ? previewCard.name : "非公開カード";
+      item.appendChild(name);
+    }
     item.appendChild(meta);
     els.selectedPreview.appendChild(item);
   });
+}
+
+function stackPreviewKey(ref) {
+  return `${ref.owner}:${ref.zone}:${ref.uid}`;
+}
+
+function stackPreviewIndex(ref, cards) {
+  const key = stackPreviewKey(ref);
+  const maxIndex = Math.max(cards.length - 1, 0);
+  const index = Math.max(0, Math.min(uiState.stackPreviewIndexes[key] || 0, maxIndex));
+  uiState.stackPreviewIndexes[key] = index;
+  return index;
+}
+
+function setStackPreviewIndex(ref, index) {
+  uiState.stackPreviewIndexes[stackPreviewKey(ref)] = Math.max(0, index);
+  render();
+}
+
+function renderPreviewStackList(ref, cards, activeIndex) {
+  const wrap = document.createElement("div");
+  wrap.className = "selected-preview-stack-list";
+
+  const controls = document.createElement("div");
+  controls.className = "selected-preview-stack-controls";
+  controls.appendChild(
+    actionButton("表示↑", () => setStackPreviewIndex(ref, activeIndex - 1), activeIndex <= 0),
+  );
+  controls.appendChild(
+    actionButton(
+      "表示↓",
+      () => setStackPreviewIndex(ref, activeIndex + 1),
+      activeIndex >= cards.length - 1,
+    ),
+  );
+  wrap.appendChild(controls);
+
+  cards.forEach((stackCard, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `selected-preview-stack-name${index === activeIndex ? " active" : ""}`;
+    const name = canShowCard(ref.owner, ref.zone, stackCard) ? stackCard.name : "非公開カード";
+    button.textContent = `${index + 1}. ${name}${index === activeIndex ? "（表示中）" : ""}`;
+    button.addEventListener("click", () => setStackPreviewIndex(ref, index));
+    wrap.appendChild(button);
+  });
+
+  return wrap;
 }
 
 function renderSelection() {
@@ -2011,7 +2080,6 @@ function renderShieldCheckRevealChoice(panel) {
   const actions = document.createElement("div");
   actions.className = "selection-actions";
   const okButton = actionButton("OK", revealSelectedShieldCheckCards);
-  okButton.classList.add("wide-button");
   actions.appendChild(okButton);
   panel.appendChild(actions);
 }
@@ -2633,6 +2701,7 @@ function removeMovedCardsFromZoneBrowse(movedRefs) {
   if (!Array.isArray(state.zoneBrowse?.uids) || !movedRefs.length) return;
   const movedUids = new Set(movedRefs.map((ref) => ref.uid));
   state.zoneBrowse.uids = state.zoneBrowse.uids.filter((uid) => !movedUids.has(uid));
+  if (!state.zoneBrowse.uids.length) state.zoneBrowse = null;
 }
 
 function faceUpForZone(zoneKey, options = {}) {
