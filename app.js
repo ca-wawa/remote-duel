@@ -84,6 +84,8 @@ const roomSync = {
   seats: {},
   roomRef: null,
   presenceRef: null,
+  presenceWatchRef: null,
+  presence: {},
   connected: false,
   connecting: false,
   applyingRemote: false,
@@ -308,7 +310,8 @@ async function connectRoom() {
     roomSync.localSlot = "";
     roomSync.seats = {};
     roomSync.roomRef = roomSync.db.ref(`rooms/${roomId}`);
-    roomSync.presenceRef = roomSync.roomRef.child(`presence/${roomSync.user.uid}`);
+    roomSync.presenceRef = roomSync.roomRef.child(`presence/${roomSync.clientId}`);
+    roomSync.presenceWatchRef = roomSync.roomRef.child("presence");
     roomSync.connected = true;
     clearSelection();
     closeTemporaryViews();
@@ -318,6 +321,7 @@ async function connectRoom() {
       joinedAt: window.firebase.database.ServerValue.TIMESTAMP,
     });
     roomSync.presenceRef.onDisconnect().remove();
+    roomSync.presenceWatchRef.on("value", handlePresenceSnapshot);
 
     const snapshot = await roomSync.roomRef.once("value");
     const payload = snapshot.val();
@@ -346,6 +350,10 @@ function disconnectRoom(options = {}) {
     roomSync.writeTimer = null;
   }
   if (roomSync.roomRef) roomSync.roomRef.off("value", handleRoomSnapshot);
+  if (roomSync.presenceWatchRef) {
+    roomSync.presenceWatchRef.off("value", handlePresenceSnapshot);
+    roomSync.presenceWatchRef = null;
+  }
   if (roomSync.presenceRef) {
     roomSync.presenceRef.remove();
     roomSync.presenceRef = null;
@@ -356,6 +364,7 @@ function disconnectRoom(options = {}) {
   roomSync.connecting = false;
   roomSync.localSlot = "";
   roomSync.seats = {};
+  roomSync.presence = {};
   roomSync.lastSyncedHash = "";
   roomSync.pendingLocalHash = "";
   if (!options.silent) {
@@ -404,7 +413,8 @@ function renderRoomControls() {
 
 function headerConnectionStatus() {
   if (roomSync.connected) {
-    return assignedLocalSlot() ? "接続中" : "接続中 / 担当未決定";
+    if (!assignedLocalSlot()) return activePeerClientIds().length ? "2人接続" : "担当未決定";
+    return activePeerClientIds().length ? "2人接続" : "相手待ち";
   }
   if (roomSync.connecting) return "接続中...";
   if (roomSync.statusType === "error") return "接続エラー";
@@ -457,22 +467,19 @@ async function claimSeat(slot) {
 async function randomizeSeats() {
   if (!roomSync.connected || !roomSync.roomRef) return;
   const activeClientIds = await readActiveClientIds();
-  const otherClientId = [...activeClientIds].find((clientId) => clientId !== roomSync.clientId);
+  const peerClientIds = [...activeClientIds].filter((clientId) => clientId !== roomSync.clientId);
+  if (peerClientIds.length > 1) {
+    roomSync.status = "ランダム決定は2人接続の状態で実行してください";
+    roomSync.statusType = "error";
+    renderRoomControls();
+    return;
+  }
+  const otherClientId = peerClientIds[0] || "";
   const localSlot = Math.random() < 0.5 ? "self" : "opponent";
   const remoteSlot = opponentOf(localSlot);
 
-  const result = await updateRoomSeats((seats) => {
-    const next = removeClientFromSeats(seats, roomSync.clientId);
-    if (otherClientId) removeClientFromSeats(next, otherClientId);
-    if (seatOccupiedByAnotherActiveClient(next[localSlot], activeClientIds, roomSync.clientId)) {
-      return null;
-    }
-    if (
-      otherClientId &&
-      seatOccupiedByAnotherActiveClient(next[remoteSlot], activeClientIds, otherClientId)
-    ) {
-      return null;
-    }
+  const result = await updateRoomSeats(() => {
+    const next = {};
     next[localSlot] = roomSync.clientId;
     if (otherClientId) next[remoteSlot] = otherClientId;
     return next;
@@ -493,12 +500,11 @@ async function randomizeSeats() {
 
 async function updateRoomSeats(updater) {
   const seatsRef = roomSync.roomRef.child("seats");
-  const currentSnapshot = await seatsRef.once("value");
-  const next = updater(normalizeSeats(currentSnapshot.val()));
-  if (!next) return { committed: false, snapshot: currentSnapshot };
-  await seatsRef.set(next);
-  const nextSnapshot = await seatsRef.once("value");
-  return { committed: true, snapshot: nextSnapshot };
+  const result = await seatsRef.transaction((current) => {
+    const next = updater(normalizeSeats(current));
+    return next || undefined;
+  });
+  return { committed: result.committed, snapshot: result.snapshot };
 }
 
 async function readActiveClientIds() {
@@ -508,6 +514,23 @@ async function readActiveClientIds() {
       .map((entry) => entry?.clientId)
       .filter(Boolean),
   );
+}
+
+function handlePresenceSnapshot(snapshot) {
+  roomSync.presence = snapshot.val() || {};
+  renderRoomControls();
+}
+
+function activeClientIdsFromPresence() {
+  return new Set(
+    Object.values(roomSync.presence || {})
+      .map((entry) => entry?.clientId)
+      .filter(Boolean),
+  );
+}
+
+function activePeerClientIds() {
+  return [...activeClientIdsFromPresence()].filter((clientId) => clientId !== roomSync.clientId);
 }
 
 async function updatePresenceSlot(slot) {
@@ -1048,6 +1071,7 @@ function startShieldCheck(refs) {
 function revealSelectedShieldCheckCards() {
   const owner = state.pendingShieldCheckReveal?.owner || state.selected[0]?.owner;
   if (!owner) return;
+  if (!canResolveShieldCheck(owner)) return;
   const refs = selectedRefsWithCards().filter(
     ({ ref }) => ref.owner === owner && ref.zone === "shieldCheck",
   );
@@ -1374,17 +1398,22 @@ function renderRevealArea() {
   });
 
   if (state.pendingShieldCheckReveal) {
+    const owner = state.pendingShieldCheckReveal.owner;
+    const canResolve = canResolveShieldCheck(owner);
     const note = document.createElement("div");
     note.className = "reveal-note";
 
     const text = document.createElement("p");
-    text.textContent =
-      "開示するカードを選んでOK。選ばなかったカードはそのまま手札に加わります。";
+    text.textContent = canResolve
+      ? "開示するカードを選んでOK。選ばなかったカードはそのまま手札に加わります。"
+      : `${playerLabel(owner)}が開示するカードを選んでいます。`;
     note.appendChild(text);
 
-    const button = actionButton("OK", revealSelectedShieldCheckCards);
-    button.classList.add("primary-button");
-    note.appendChild(button);
+    if (canResolve) {
+      const button = actionButton("OK", revealSelectedShieldCheckCards);
+      button.classList.add("primary-button");
+      note.appendChild(button);
+    }
     els.revealArea.appendChild(note);
   }
 
@@ -1695,8 +1724,11 @@ function renderReadoutConnectionStatus() {
 
 function renderPendingButtons() {
   els.pendingButtons.innerHTML = "";
-  const groups = Object.keys(PLAYERS).filter((slot) => state.players[slot].pending.length);
+  const bottomSlot = displayBottomSlot();
+  const visualOrder = [opponentOf(bottomSlot), bottomSlot];
+  const groups = visualOrder.filter((slot) => state.players[slot].pending.length);
   els.pendingButtons.parentElement.dataset.emptyPending = groups.length ? "false" : "true";
+  els.pendingButtons.dataset.groupCount = String(groups.length);
 
   if (!groups.length) {
     const empty = document.createElement("span");
@@ -1709,7 +1741,7 @@ function renderPendingButtons() {
   groups.forEach((slot) => {
     const cards = state.players[slot].pending;
     const group = document.createElement("article");
-    group.className = "pending-group";
+    group.className = `pending-group pending-${slot}`;
 
     const label = document.createElement("button");
     label.type = "button";
@@ -1724,7 +1756,7 @@ function renderPendingButtons() {
     const row = document.createElement("div");
     row.className = "pending-card-row";
     cards.forEach((card) => {
-      row.appendChild(renderCard(slot, "pending", card, true, "非公開", "compact"));
+      row.appendChild(renderCard(slot, "pending", card, true, "非公開"));
     });
     group.appendChild(row);
     els.pendingButtons.appendChild(group);
@@ -1866,7 +1898,11 @@ function renderSelection() {
   }
 
   if (state.pendingShieldCheckReveal) {
-    renderShieldCheckRevealChoice(panel);
+    if (canResolveShieldCheck()) {
+      renderShieldCheckRevealChoice(panel);
+    } else {
+      renderShieldCheckWaiting(panel);
+    }
     return;
   }
 
@@ -2091,6 +2127,21 @@ function renderShieldCheckRevealChoice(panel) {
   const okButton = actionButton("OK", revealSelectedShieldCheckCards);
   actions.appendChild(okButton);
   panel.appendChild(actions);
+}
+
+function renderShieldCheckWaiting(panel) {
+  const owner = state.pendingShieldCheckReveal.owner;
+  panel.className = "selection-panel muted shield-check-choice";
+
+  const title = document.createElement("p");
+  title.className = "selection-title";
+  title.textContent = "シールドチェック待機中";
+  panel.appendChild(title);
+
+  const meta = document.createElement("p");
+  meta.className = "selection-meta";
+  meta.textContent = `${playerLabel(owner)}が開示するカードを選択しています。`;
+  panel.appendChild(meta);
 }
 
 function renderDeckPositionChoice(panel, refs) {
@@ -2574,6 +2625,7 @@ function getBatchSelectionActions(refs) {
   const zones = [...new Set(refs.map(({ ref }) => ref.zone))];
   if (zones.length !== 1) return [];
   if (zones[0] === "shieldCheck") {
+    if (state.pendingShieldCheckReveal && !canResolveShieldCheck(refs[0].ref.owner)) return [];
     const allFaceUp = refs.every(({ card }) => card.faceUp);
     if (allFaceUp) {
       return [
@@ -2688,6 +2740,10 @@ function isDeckBrowseSelection(refs) {
 
 function isShieldSelection(refs) {
   return refs.length > 0 && refs.every(({ ref }) => ref.zone === "shields");
+}
+
+function canResolveShieldCheck(owner = state.pendingShieldCheckReveal?.owner) {
+  return Boolean(owner && owner === state.viewer);
 }
 
 function canToggleTapped(zoneKey) {
@@ -2953,7 +3009,9 @@ function applyRoomPayload(payload) {
   state.turnCount = clonePlain(payload.state.turnCount || { self: 1, opponent: 0 });
   state.extraTurns = clonePlain(payload.state.extraTurns || { self: 0, opponent: 0 });
   state.log = logData;
-  state.pendingShieldCheckReveal = null;
+  state.pendingShieldCheckReveal = normalizeSyncedShieldCheckReveal(
+    payload.state.pendingShieldCheckReveal,
+  );
   restoreSelectionAfterRemote(localSelection, {
     pendingShieldAction: localPendingShieldAction,
     pendingDeckAction: localPendingDeckAction,
@@ -3008,6 +3066,7 @@ function buildRoomPayload() {
     turn: state.turn,
     turnCount: clonePlain(state.turnCount),
     extraTurns: clonePlain(state.extraTurns),
+    pendingShieldCheckReveal: normalizeLocalShieldCheckReveal(),
   };
   const logData = state.log.slice(-120);
   return {
@@ -3039,6 +3098,22 @@ function sanitizePlayersForRoom() {
     };
     return players;
   }, {});
+}
+
+function normalizeLocalShieldCheckReveal() {
+  const owner = state.pendingShieldCheckReveal?.owner;
+  if (!PLAYERS[owner]) return null;
+  return hasUnrevealedShieldCheck(owner) ? { owner } : null;
+}
+
+function normalizeSyncedShieldCheckReveal(pending) {
+  const owner = pending?.owner;
+  if (!PLAYERS[owner]) return null;
+  return hasUnrevealedShieldCheck(owner) ? { owner } : null;
+}
+
+function hasUnrevealedShieldCheck(owner) {
+  return state.players[owner]?.shieldCheck?.some((card) => !card.faceUp && !card.shieldCheckRevealed);
 }
 
 function sanitizeCardsForRoom(cards = []) {
