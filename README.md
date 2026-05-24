@@ -57,6 +57,23 @@ python3 -m http.server 5173
 
 そのあとブラウザで `http://localhost:5173` を開きます。
 
+## コード構成
+
+アプリ本体は `scripts/` に責務ごとに分けています。`index.html` のscriptタグ順が依存順です。
+
+- `config.js`: 定数、Firebase設定、プレイヤー/ゾーン定義
+- `state.js`: アプリ状態、UI状態、同期状態
+- `room-sync.js`: Firebase接続、ルーム参加、同期用の保存/復元
+- `deck-loader.js`: ZIP読込、デッキ正規化、IndexedDB保存
+- `game-actions.js`: ドロー、移動、ターン、シールドチェックなどのゲーム操作
+- `render-board.js`: 盤面、公開エリア、カード要素のDOM描画
+- `render-panels.js`: 操作パネル、ログ、選択中カード表示
+- `render-controls.js`: 描画用の小さなUI部品と表示状態判定
+- `interactions.js`: クリック、ドラッグ、選択、共通ヘルパー
+- `bootstrap.js`: DOM取得、イベント登録、初期化
+
+大きな変更を入れるときは、まず「状態を変える処理」は `game-actions.js`、「盤面に出す処理」は `render-board.js`、「操作パネルに出す処理」は `render-panels.js`、「Firebaseに関わる処理」は `room-sync.js` に置けるかを確認すると追いやすいです。
+
 ## オンライン対戦
 
 Firebase CDN版SDKをscriptタグで読み込み、匿名ログイン + Realtime Databaseで同期します。npmは不要です。
