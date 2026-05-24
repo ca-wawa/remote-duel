@@ -8,6 +8,7 @@
   --playmat: #fbfcfb;
   --mana: #c8e783;
   --shield: #fff27a;
+  --battle: #ffe6e6;
   --panel: #cfe6f7;
   --panel-line: #a6c5da;
   --accent: #f29a00;
@@ -23,7 +24,9 @@
   --zone-row-h: 108px;
 }
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -366,8 +369,8 @@ button:disabled {
 }
 
 .battle-zone {
-  background: rgba(255, 255, 255, 0.58);
-  border-color: rgba(88, 100, 93, 0.18);
+  background: var(--battle);
+  border-color: rgba(156, 79, 79, 0.2);
 }
 
 .hand-zone {
@@ -400,7 +403,7 @@ button:disabled {
   width: var(--pile-card-w);
   height: var(--pile-card-h);
   border-radius: 6px;
-  border: 2px dashed rgba(88, 100, 93, 0.42);
+  border: 2px dashed rgba(88, 100, 93, 0.38);
   background: rgba(88, 100, 93, 0.16);
   position: absolute;
   inset: 50% auto auto 50%;
@@ -413,7 +416,7 @@ button:disabled {
 }
 
 .pile-zone.empty {
-  border: 1px dashed rgba(88, 100, 93, 0.36);
+  border: 2px dashed rgba(88, 100, 93, 0.38);
   color: rgba(17, 23, 19, 0.35);
   font-size: 0.74rem;
   font-weight: 900;

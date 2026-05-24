@@ -234,13 +234,13 @@ function renderLane(slot, lane = els[`lane-${slot}`], position = slot === "oppon
   const pileColumn = document.createElement("div");
   pileColumn.className = "pile-column";
   if (position === "top") {
-    pileColumn.appendChild(renderPileZone(slot, "deck"));
     pileColumn.appendChild(renderHandPileZone(slot));
     pileColumn.appendChild(renderPileZone(slot, "graveyard"));
+    pileColumn.appendChild(renderPileZone(slot, "deck"));
   } else {
+    pileColumn.appendChild(renderPileZone(slot, "deck"));
     pileColumn.appendChild(renderPileZone(slot, "graveyard"));
     pileColumn.appendChild(renderHandPileZone(slot));
-    pileColumn.appendChild(renderPileZone(slot, "deck"));
   }
 
   const zoneColumn = document.createElement("div");
