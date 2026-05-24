@@ -18,6 +18,8 @@
   --card-w: 56px;
   --card-h: 78px;
   --pile-w: 70px;
+  --pile-card-w: 66px;
+  --pile-card-h: 92px;
   --zone-row-h: 108px;
 }
 
@@ -268,6 +270,7 @@ button:disabled {
   display: grid;
   grid-template-rows: repeat(3, var(--zone-row-h));
   align-content: start;
+  justify-items: center;
   gap: 8px;
 }
 
@@ -372,6 +375,10 @@ button:disabled {
 }
 
 .pile-zone {
+  width: var(--pile-card-w);
+  height: var(--pile-card-h);
+  align-self: center;
+  justify-self: center;
   min-height: 0;
   display: grid;
   place-items: center;
@@ -390,8 +397,8 @@ button:disabled {
 
 .graveyard-pile::before {
   content: "";
-  width: 66px;
-  height: 92px;
+  width: var(--pile-card-w);
+  height: var(--pile-card-h);
   border-radius: 6px;
   border: 2px dashed rgba(88, 100, 93, 0.42);
   background: rgba(88, 100, 93, 0.16);
@@ -671,9 +678,9 @@ button:disabled {
 }
 
 .card.compact {
-  width: 66px;
-  height: 92px;
-  flex-basis: 66px;
+  width: var(--pile-card-w);
+  height: var(--pile-card-h);
+  flex-basis: var(--pile-card-w);
 }
 
 .card.selected {
@@ -1489,6 +1496,8 @@ input[type="text"] {
     --card-w: 56px;
     --card-h: 78px;
     --pile-w: 68px;
+    --pile-card-w: 66px;
+    --pile-card-h: 92px;
   }
 
   .table-layout {
@@ -1511,6 +1520,8 @@ input[type="text"] {
     --card-w: 54px;
     --card-h: 76px;
     --pile-w: 62px;
+    --pile-card-w: 60px;
+    --pile-card-h: 84px;
     --zone-row-h: 102px;
   }
 
